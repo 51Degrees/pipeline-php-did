@@ -1,0 +1,43 @@
+{
+    "name": "51degrees/fiftyone.pipeline.did",
+    "description": "Strongly typed reader for the 51Did (51Degrees Identifier) value returned by the 51Degrees Cloud service. Parses the OWID envelope and exposes the Flags, License Id and value (Hash) plus the identifier type. Compare values, never envelopes.",
+    "keywords": [
+        "51degrees",
+        "51did",
+        "fodid",
+        "owid"
+    ],
+    "authors": [
+        {
+            "name": "51Degrees Engineering",
+            "email": "engineering@51degrees.com"
+        }
+    ],
+    "license": "EUPL-1.2",
+    "type": "library",
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "swan-community/owid": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "*"
+    },
+    "repositories": [
+        {
+            "comment": "Consume the 51Degrees fork of owid-php from the local git submodule. Switch to Packagist once owid-php is published upstream.",
+            "type": "path",
+            "url": "./owid-php"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "fiftyone\\pipeline\\did\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "fiftyone\\pipeline\\did\\tests\\": "tests/"
+        }
+    }
+}
