@@ -146,10 +146,18 @@ final class FodId
         return new self(Owid::fromByteArray($buffer));
     }
 
-    /** Promotes an already-parsed OWID into a 51Did (alias of the constructor). */
+    /**
+     * Promotes an already-parsed OWID into a 51Did. The OWID is **copied**
+     * (round-tripped through its byte form), not aliased, so a FodId can never
+     * desync from its envelope if the caller later mutates the OWID it passed
+     * in. The supplied OWID must therefore be signed (serializable).
+     *
+     * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
+     *                                           serialized (e.g. it is unsigned)
+     */
     public static function fromOwid(Owid $owid): self
     {
-        return new self($owid);
+        return new self(Owid::fromByteArray($owid->asByteArray()));
     }
 
     /** The 1-byte usage flags bit-mask from the payload (0-255). */
@@ -178,12 +186,6 @@ final class FodId
     public function getHash(): string
     {
         return $this->hash;
-    }
-
-    /** The wrapped OWID envelope. */
-    public function getOwid(): Owid
-    {
-        return $this->owid;
     }
 
     /** The OWID version. */

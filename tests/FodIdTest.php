@@ -110,10 +110,12 @@ class FodIdTest extends TestCase
         );
     }
 
-    public function testFodIdIsAnOwid(): void
+    public function testExposesOwidLevelFields(): void
     {
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
-        $this->assertInstanceOf(Owid::class, $fod->getOwid());
+        // OWID-level concerns are delegated to the wrapped envelope.
+        $this->assertSame(self::TEST_DOMAIN, $fod->getDomain());
+        $this->assertNotNull($fod->getVersion());
     }
 
     public function testFromBase64UnpacksAllThreeFields(): void
@@ -143,7 +145,12 @@ class FodIdTest extends TestCase
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalHash(), $fod->getHash());
         $this->assertSame($owid->domain, $fod->getDomain());
-        $this->assertEquals($owid->date, $fod->getDate());
+        // fromOwid copies via the wire form, which is minute-precise; the
+        // in-memory sign() date can carry sub-minute precision.
+        $this->assertSame(
+            $owid->date->format('Y-m-d H:i'),
+            $fod->getDate()->format('Y-m-d H:i')
+        );
         $this->assertSame($owid->version, $fod->getVersion());
         $this->assertSame($owid->payload, $fod->getPayload());
         $this->assertSame($owid->signature, $fod->getSignature());
@@ -362,13 +369,28 @@ class FodIdTest extends TestCase
 
     public function testConstructionDoesNotVerify(): void
     {
-        // An unsigned OWID (empty signature) still constructs and exposes all
-        // three fields - construction must not verify.
-        $unsigned = new Owid(self::TEST_DOMAIN, null, self::canonicalPayload());
-        $fod = FodId::fromOwid($unsigned);
+        // An OWID with a present but tampered (invalid) signature still
+        // constructs and exposes all three fields - construction must not
+        // verify.
+        $raw = base64_decode($this->signedOwidBase64(self::canonicalPayload()));
+        $raw[strlen($raw) - 1] = $raw[strlen($raw) - 1] ^ "\xFF"; // corrupt sig
+        $tampered = Owid::fromByteArray($raw);
+        $fod = FodId::fromOwid($tampered);
         $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalHash(), $fod->getHash());
+    }
+
+    public function testFromOwidIsDecoupledFromSourceOwid(): void
+    {
+        // Mutating the source OWID after construction must not affect the
+        // FodId (it holds an independent copy).
+        $owid = $this->signedOwid(self::canonicalPayload());
+        $fod = FodId::fromOwid($owid);
+        $owid->payload = str_repeat("\x00", FodId::PAYLOAD_LENGTH); // mutate source
+        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertSame(0x20, ord($fod->getPayload()[FodId::HASH_OFFSET]));
     }
 
     public function testVerifyWithWrongKeyReturnsFalse(): void
