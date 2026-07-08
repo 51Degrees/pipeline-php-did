@@ -393,6 +393,18 @@ class FodIdTest extends TestCase
         $this->assertSame(0x20, ord($fod->getPayload()[FodId::HASH_OFFSET]));
     }
 
+    public function testConstructorIsDecoupledFromSourceOwid(): void
+    {
+        // The public constructor must copy the OWID too, not just fromOwid -
+        // mutating the source afterwards must not affect the FodId.
+        $owid = $this->signedOwid(self::canonicalPayload());
+        $fod = new FodId($owid);
+        $owid->payload = str_repeat("\x00", FodId::PAYLOAD_LENGTH); // mutate source
+        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertSame(0x20, ord($fod->getPayload()[FodId::HASH_OFFSET]));
+    }
+
     public function testVerifyWithWrongKeyReturnsFalse(): void
     {
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));

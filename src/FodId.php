@@ -49,9 +49,10 @@ use SwanCommunity\Owid\Version;
  *
  * The owid-php {@see Owid} is `final`, so this type **composes** an OWID (holds
  * the wrapped envelope and delegates OWID-level concerns to it) rather than
- * inheriting from it. Constructing a {@see FodId} does **not** verify the
- * signature; call {@see FodId::verify()} explicitly. Payload bytes are held as
- * a PHP string, which is immutable, so no defensive copy is required.
+ * inheriting from it. The wrapped OWID is **copied** on construction (an Owid
+ * is mutable), so a FodId is fully decoupled from the caller's instance and
+ * can never desync from its envelope. Constructing a {@see FodId} does **not**
+ * verify the signature; call {@see FodId::verify()} explicitly.
  */
 final class FodId
 {
@@ -83,13 +84,20 @@ final class FodId
      * Promotes an already-parsed {@see Owid} into a 51Did by unpacking its
      * payload.
      *
+     * The OWID is **copied** (round-tripped through its byte form), not
+     * aliased, so a FodId can never desync from its envelope if the caller
+     * later mutates the OWID they passed in. The OWID must therefore be signed
+     * (serializable).
+     *
      * @throws InvalidArgumentException when the payload is shorter than the
      *                                  minimum for its identifier type.
+     * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
+     *                                           serialized (e.g. it is unsigned)
      */
     public function __construct(Owid $owid)
     {
-        $this->owid = $owid;
-        $payload = $owid->payload;
+        $this->owid = Owid::fromByteArray($owid->asByteArray());
+        $payload = $this->owid->payload;
         $length = strlen($payload);
         if ($length < self::HEADER_LENGTH) {
             throw new InvalidArgumentException(sprintf(
@@ -147,17 +155,18 @@ final class FodId
     }
 
     /**
-     * Promotes an already-parsed OWID into a 51Did. The OWID is **copied**
-     * (round-tripped through its byte form), not aliased, so a FodId can never
-     * desync from its envelope if the caller later mutates the OWID it passed
-     * in. The supplied OWID must therefore be signed (serializable).
+     * Promotes an already-parsed OWID into a 51Did. The constructor **copies**
+     * the OWID (round-tripped through its byte form), not aliases it, so a
+     * FodId can never desync from its envelope if the caller later mutates the
+     * OWID it passed in. The supplied OWID must therefore be signed
+     * (serializable).
      *
      * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
      *                                           serialized (e.g. it is unsigned)
      */
     public static function fromOwid(Owid $owid): self
     {
-        return new self(Owid::fromByteArray($owid->asByteArray()));
+        return new self($owid);
     }
 
     /** The 1-byte usage flags bit-mask from the payload (0-255). */
