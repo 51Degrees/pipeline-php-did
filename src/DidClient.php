@@ -259,9 +259,9 @@ final class DidClient
      * endpoint, which needs no licence key and counts as one use. A string
      * is sent as given, in either base64 alphabet, and a {@see FodId} is
      * sent in the URL-safe form. The identifier goes under both parameter
-     * names, `51did` and `owid`, because a cloud that has not taken the
-     * creator context release reads only `owid`, while the release reads
-     * `51did` first and keeps `owid` as an alias.
+     * names, `51did` and `owid`, so the request works with hosts that read
+     * either one. Hosts that recognise both prefer `51did` and keep `owid`
+     * as a compatibility alias.
      *
      * @return bool True for `{ "valid": true }`, false for
      *     `{ "valid": false }`.
