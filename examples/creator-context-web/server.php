@@ -37,10 +37,12 @@ declare(strict_types=1);
  *    signature outcome and the creator context verdict, comes back only
  *    as an encrypted result that the browser cannot read or forge.
  * 3. Redeem. The page hands the encrypted result to this server, which
- *    calls redeem with the 51Did, the encrypted result and the account's
- *    licence key, and receives the signature outcome, the true creator
- *    context verdict, when the verification happened (verifiedAt) and
- *    how long ago that was (secondsSinceVerified).
+ *    parses the 51Did, checks its signature offline against the
+ *    published keys, then calls redeem through the DidClient with the
+ *    51Did, the encrypted result and the account's licence key, and
+ *    receives the signature outcome, the true creator context verdict,
+ *    when the verification happened (verifiedAt) and how long ago that
+ *    was (secondsSinceVerified).
  *
  * A fresh challenge is issued per page load and bound through both
  * steps by the cloud. A production server would also remember the
@@ -50,11 +52,16 @@ declare(strict_types=1);
  * What a run costs. Every call to the cloud is one use against the
  * subscription behind the resource key. A browser check makes two,
  * verify-full from the page and redeem from this server, so a
- * browser-based context check is two uses every time.
+ * browser-based context check is two uses every time. The offline
+ * signature check fetches the public key list once per DidClient
+ * instance, which is one more use each time the list is fetched. Under
+ * PHP's built-in server every request starts afresh, so this demo
+ * fetches the list on every redemption, whereas an application server
+ * keeping one client alive fetches it once a day.
  *
- * Standard library only (PHP 8.1 or later), so it runs with PHP's
- * built-in server and does not need Composer's autoloader. Run from
- * this folder, then open http://localhost:5100/ in a browser.
+ * Uses the 51Did package from this repository (PHP 8.1 or later), so run
+ * `composer install` at the repository root first, then from this folder
+ * start the built-in server and open http://localhost:5100/ in a browser.
  *
  *   php -S localhost:5100 server.php
  *
@@ -72,6 +79,20 @@ declare(strict_types=1);
  *                            https://cloud.51degrees.com/api/v4/
  */
 
+use fiftyone\pipeline\did\CloudException;
+use fiftyone\pipeline\did\DidClient;
+use fiftyone\pipeline\did\FodId;
+use fiftyone\pipeline\did\NotSupportedException;
+
+// The package from this repository, through the repository's own
+// autoloader, so the demo exercises the checked-out code.
+$autoload = __DIR__ . '/../../vendor/autoload.php';
+if (!is_file($autoload)) {
+    http_response_code(500);
+    exit('Run composer install at the repository root first.');
+}
+require $autoload;
+
 // The resource key is public by nature and names the account. The
 // aligned name is read first, then the legacy one.
 $resource = getenv('_51DEGREES_RESOURCE_KEY') ?: getenv('RESOURCE_KEY');
@@ -86,24 +107,32 @@ if (!$resource) {
 // servers. An account holding none has nothing to check against, so the
 // demo runs without it, and where the account does hold some the
 // redemption reports the context unreadable.
-$licence = getenv('_51DEGREES_LICENSE_KEY') ?: getenv('LICENSE_KEY') ?: '';
+$licence = getenv('_51DEGREES_LICENSE_KEY') ?: getenv('LICENSE_KEY') ?: null;
 
-// The cloud API base including the /api/v4/ segment. This is the same
-// variable the 51Degrees cloud request engine honours, so setting it
-// once points every 51Degrees example at the same place. Normalised to
-// end in exactly one slash so every URL is base plus a path, here and
-// in the page, which receives the base through its __API__ placeholder.
-// A host other than cloud.51degrees.com would be used to (a) use an on
+// One client for the server. The endpoint argument is left null so the
+// client reads FOD_CLOUD_API_URL itself, the same variable the 51Degrees
+// cloud request engine honours, and falls back to the public cloud. A
+// host other than cloud.51degrees.com would be used to (a) use an on
 // premise web server, or (b) use a privately hosted version of the
 // 51Degrees cloud for performance reasons. This is the private hosting
 // option of the cloud service. Both run the same service, so the demo
-// works unchanged against either.
-$base = rtrim(
-    getenv('FOD_CLOUD_API_URL') ?: 'https://cloud.51degrees.com/api/v4/',
-    '/'
-) . '/';
+// works unchanged against either. The page receives the same base
+// through its __API__ placeholder.
+$client = new DidClient($resource, $licence);
 
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+
+/**
+ * Answers the page with a status and a JSON body.
+ *
+ * @param array<string, mixed> $body
+ */
+function answerJson(int $status, array $body): void
+{
+    http_response_code($status);
+    header('Content-Type: application/json');
+    echo json_encode($body);
+}
 
 if ($path === '/examples-main.min.css') {
     // The design system stylesheet, vendored beside this server exactly
@@ -116,49 +145,61 @@ if ($path === '/examples-main.min.css') {
 }
 
 if ($path === '/redeem') {
-    // The server-side step. The licence key is added here and only
-    // here, so the browser never sees it, and it is sent empty when the
-    // account holds no licence keys.
-    $params = http_build_query([
-        '51did' => $_GET['51did'] ?? '',
-        'result' => $_GET['result'] ?? '',
-        'challenge' => $_GET['challenge'] ?? '',
-        'license' => $licence,
-    ]);
-    $context = stream_context_create(['http' => [
-        'header' => "User-Agent: 51did-demo-php\r\n",
-        // Read the body of an error response too, so the page is shown
-        // what the service said rather than a bare warning.
-        'ignore_errors' => true,
-    ]]);
-    $url = "{$base}id/redeem/{$resource}?{$params}";
-    // The @ keeps a connection failure from printing a warning into the
-    // response, since the false return is reported below.
-    $body = @file_get_contents($url, false, $context);
-    // The upstream status code, content type and body are relayed
-    // exactly as received, so a 404 from a service that does not offer
-    // this endpoint yet, or an error object from one that does, reaches
-    // the page as the failure it is rather than as an unexpected token.
-    // PHP sets $http_response_header with the response headers, the
-    // status line first.
-    $status = 502;
-    $type = 'text/plain';
-    foreach ($http_response_header ?? [] as $header) {
-        if (preg_match('#^HTTP/\S+\s+(\d{3})#', $header, $match)) {
-            $status = (int) $match[1];
-        } elseif (stripos($header, 'Content-Type:') === 0) {
-            $type = trim(substr($header, strlen('Content-Type:')));
-        }
+    // The server-side step, and the lines a developer copies into their
+    // own server. The 51Did arrives from the page in the URL-safe
+    // alphabet, which fromBase64 accepts. The licence key is added by the
+    // client here and only here, so the browser never sees it.
+    try {
+        $fodId = FodId::fromBase64($_GET['51did'] ?? '');
+    } catch (Throwable $error) {
+        answerJson(400, ['errors' => [
+            'The 51did is not a valid 51Did: ' . $error->getMessage(),
+        ]]);
+        return;
     }
-    if ($body === false) {
-        $body = "redeem failed: no response from {$url}";
+    try {
+        // The offline check against the published keys, which needs no
+        // sealed result. A production server could refuse here before
+        // spending a redemption on a forged envelope. The demo carries on
+        // so the page can show both answers side by side.
+        $serverSignature = $client->verifySignature($fodId)
+            ? 'verified'
+            : 'invalid';
+        $redeemed = $client->redeem(
+            $fodId,
+            $_GET['result'] ?? '',
+            $_GET['challenge'] ?? ''
+        );
+    } catch (NotSupportedException $error) {
+        // The host answering does not offer the creator context at all,
+        // which the page reports as "not supported by this host".
+        http_response_code(404);
+        header('Content-Type: text/plain');
+        echo 'The service at ' . $client->getEndpoint()
+            . ' does not support the creator context.';
+        return;
+    } catch (InvalidArgumentException $error) {
+        // The cloud refused the 51Did, and its message says why.
+        answerJson(400, ['errors' => [$error->getMessage()]]);
+        return;
+    } catch (CloudException $error) {
+        // Another status from the service, relayed with what it said.
+        $status = $error->getStatusCode();
+        answerJson($status >= 100 ? $status : 502, [
+            'error' => $error->getMessage(),
+        ]);
+        return;
+    } catch (Throwable $error) {
+        // The cloud could not be reached, or a key could not be read.
+        answerJson(502, ['error' => 'redeem failed: ' . $error->getMessage()]);
+        return;
     }
-    http_response_code($status);
-    // Without this PHP appends its default charset to a text content
-    // type, which would alter what the service sent.
-    ini_set('default_charset', '');
-    header('Content-Type: ' . $type);
-    echo $body;
+    // The cloud's own shape (signature, context, factors when present,
+    // verifiedAt, secondsSinceVerified) plus the offline check, which the
+    // page shows when it knows the field and ignores otherwise.
+    $answer = $redeemed->toArray();
+    $answer['serverSignature'] = $serverSignature;
+    answerJson($redeemed->statusCode, $answer);
     return;
 }
 
@@ -167,7 +208,7 @@ if ($path === '/') {
     echo strtr(file_get_contents(__DIR__ . '/page.html'), [
         '__RESOURCE__' => $resource,
         '__CHALLENGE__' => bin2hex(random_bytes(16)),
-        '__API__' => $base,
+        '__API__' => $client->getEndpoint(),
     ]);
     return;
 }
