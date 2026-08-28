@@ -526,9 +526,12 @@ class DidClientTest extends TestCase
         $this->assertTrue($this->client()->verify($fodId));
         $request = $this->lastRequest();
         $this->assertSame('GET', $request['method']);
+        // Both names, so a cloud reading only the older owid name and one
+        // reading 51did first both find the identifier.
         $this->assertSame(
             self::ENDPOINT . 'id/verify/' . self::RESOURCE
-                . '?51did=' . $fodId->asBase64Url(),
+                . '?51did=' . $fodId->asBase64Url()
+                . '&owid=' . $fodId->asBase64Url(),
             $request['url']
         );
         $this->assertStringNotContainsString(self::LICENCE, $request['url']);
