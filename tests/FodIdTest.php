@@ -108,7 +108,6 @@ class FodIdTest extends TestCase
             FodId::RANDOM_PAYLOAD_LENGTH,
             FodId::HASH_OFFSET + FodId::GUID_LENGTH
         );
-        $this->assertSame(136, FodId::MAXIMUM_BYTE_LENGTH);
     }
 
     public function testExposesOwidLevelFields(): void
@@ -254,64 +253,33 @@ class FodIdTest extends TestCase
         FodId::fromBase64('This is not valid Base64!@#$');
     }
 
-    public function testMaximumLengthUsesFirst37PayloadBytes(): void
+    public function testPayloadLargerThanSpecUsesFirst37Bytes(): void
     {
-        $payload = self::canonicalPayload() . str_repeat("\xCC", 19);
-        $owid = new Owid('51d.es', null, $payload);
-        $owid->signature = str_repeat("\x00", 64);
-        $wire = $owid->asByteArray();
-        $this->assertSame(FodId::MAXIMUM_BYTE_LENGTH, strlen($wire));
-        $fod = FodId::fromByteArray($wire);
+        $payload = self::canonicalPayload() . str_repeat("\xCC", 27); // 64 bytes
+        $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalHash(), $fod->getHash());
         $this->assertSame(FodId::HASH_LENGTH, strlen($fod->getHash()));
     }
 
-    public function testOneByteBeyondMaximumThrowsForEveryInput(): void
+    public function testLongDomainAndLongContextSectionAreRead(): void
     {
-        $payload = self::canonicalPayload() . str_repeat("\xCC", 20);
-        $owid = new Owid('51d.es', null, $payload);
-        $owid->signature = str_repeat("\x00", 64);
-        $wire = $owid->asByteArray();
-        $this->assertSame(FodId::MAXIMUM_BYTE_LENGTH + 1, strlen($wire));
-
+        // The creator domain is a deployment parameter, and a context
+        // section of a version the reader does not implement may be any
+        // length, so neither may stop an identifier parsing.
+        $domain = str_repeat('creator-context-', 8) . 'example.com';
+        $payload = self::canonicalPayload() . str_repeat("\xCC", 200);
+        $owid = new Owid($domain, null, $payload);
+        (new Creator($domain, $this->creator->crypto()))->sign($owid);
         foreach ([
-            fn () => FodId::fromBase64($owid->asBase64()),
-            fn () => FodId::fromByteArray($wire),
-            fn () => FodId::fromOwid($owid),
-        ] as $construct) {
-            try {
-                $construct();
-                $this->fail('Expected an InvalidArgumentException.');
-            } catch (InvalidArgumentException $error) {
-                $this->assertStringContainsString('136 bytes', $error->getMessage());
-            }
-        }
-    }
-
-    public function testOversizedPayloadInShortEnvelopeExplainsPayload(): void
-    {
-        $payload = self::canonicalPayload() . str_repeat("\xCC", 20);
-        $owid = new Owid('x', null, $payload);
-        $owid->signature = str_repeat("\x00", 64);
-        $wire = $owid->asByteArray();
-        $this->assertLessThanOrEqual(FodId::MAXIMUM_BYTE_LENGTH, strlen($wire));
-
-        foreach ([
-            fn () => FodId::fromBase64($owid->asBase64()),
-            fn () => FodId::fromByteArray($wire),
-            fn () => FodId::fromOwid($owid),
-        ] as $construct) {
-            try {
-                $construct();
-                $this->fail('Expected an InvalidArgumentException.');
-            } catch (InvalidArgumentException $error) {
-                $this->assertStringContainsString(
-                    'payload must not exceed 56 bytes',
-                    $error->getMessage()
-                );
-            }
+            FodId::fromOwid($owid),
+            FodId::fromByteArray($owid->asByteArray()),
+            FodId::fromBase64($owid->asBase64()),
+        ] as $fod) {
+            $this->assertSame($domain, $fod->getDomain());
+            $this->assertSame($payload, $fod->getPayload());
+            $this->assertSame(self::canonicalHash(), $fod->getHash());
         }
     }
 
@@ -520,6 +488,23 @@ class FodIdTest extends TestCase
         $this->assertSame('QUJD', FodId::toStandardBase64('QUJD'));
     }
 
+    public function testSurroundingWhitespaceIsIgnored(): void
+    {
+        // A value read from a header, a file or a form often carries a
+        // newline or a space, and base64 decoding skips those, so the
+        // padding has to be counted from the trimmed string.
+        $standard = $this->envelopeWithAlphabetCharacters();
+        $clean = rtrim(strtr($standard, '+/', '-_'), '=');
+        $expected = FodId::fromBase64($clean)->asByteArray();
+        foreach ([$clean . "\n", ' ' . $clean, $clean . ' '] as $given) {
+            $this->assertSame(
+                $expected,
+                FodId::fromBase64($given)->asByteArray()
+            );
+        }
+        $this->assertSame($standard, FodId::toStandardBase64($clean . "\n"));
+    }
+
     public function testAsBase64UrlRoundTrips(): void
     {
         $standard = $this->envelopeWithAlphabetCharacters();
@@ -569,9 +554,7 @@ class FodIdTest extends TestCase
         // reader must keep accepting it, with the section after the value.
         $section = "\x00" . str_repeat("\xAB", 18);
         $payload = self::canonicalPayload() . $section;
-        $owid = new Owid('51d.es', null, $payload);
-        (new Creator('51d.es', $this->creator->crypto()))->sign($owid);
-        $fod = FodId::fromOwid($owid);
+        $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(self::canonicalHash(), $fod->getHash());
         $this->assertSame($payload, $fod->getPayload());
         $this->assertSame($section, substr($fod->getPayload(), FodId::PAYLOAD_LENGTH));

@@ -85,10 +85,20 @@ final class DidClient
 
     /**
      * How far either side of a key boundary a neighbouring key is also
-     * tried, matching the tolerance the cloud applies. Internal to the
-     * selection rule rather than a published figure.
+     * tried, matching the short tolerance the cloud applies. Internal to
+     * the selection rule rather than a published figure.
      */
-    public const BOUNDARY_TOLERANCE_SECONDS = 15 * 60;
+    private const BOUNDARY_TOLERANCE_SECONDS = 15 * 60;
+
+    /**
+     * The longest encoded identifier the client sends. This is a guard
+     * against obviously malformed input rather than the size of a 51Did,
+     * so that a hostile value is refused before it is decoded, before a
+     * key is fetched and before the cloud is called. The figure is
+     * arbitrary and generous on purpose, and says nothing about how long
+     * an identifier is.
+     */
+    private const MAXIMUM_ENCODED_LENGTH = 4096;
 
     /** Seconds the default transport waits for the cloud. */
     private const TIMEOUT_SECONDS = 30;
@@ -196,12 +206,10 @@ final class DidClient
      * answer comes from the cache.
      *
      * @throws CloudException when the key endpoint answers other than 200.
-     * @throws InvalidArgumentException when the identifier is too large.
      * @throws RuntimeException when the cloud cannot be reached.
      */
     public function publicKeyFor(FodId $fodId): ?PublicKey
     {
-        self::requireMaximumSize($fodId);
         $at = $fodId->getDate();
         return self::inForceAt($this->keysCovering($at), $at);
     }
@@ -211,10 +219,10 @@ final class DidClient
      * keys, mirroring the check the cloud's verify endpoint makes.
      *
      * 1. The envelope version must be 3.
-     * 2. The payload and envelope must be within the sizes the cloud issues,
-     *    and the payload must be at least the base length for its type, being
+     * 2. The payload must be at least the base length for its type, being
      *    the 5 header bytes plus a 32 byte match key, or 16 for a Random
-     *    identifier.
+     *    identifier. Anything beyond the base is a creator context section
+     *    and is accepted, since the signature covers the whole payload.
      * 3. The candidate keys are the entry in force at the identifier's
      *    date, plus the entry in force a small tolerance earlier and the
      *    entry in force the same tolerance later where those differ, so an
@@ -234,9 +242,6 @@ final class DidClient
     public function verifySignature(FodId $fodId): bool
     {
         if ($fodId->getVersion() !== Version::Version3) {
-            return false;
-        }
-        if (!self::maximumSizeValid($fodId)) {
             return false;
         }
         $payload = $fodId->getPayload();
@@ -272,9 +277,9 @@ final class DidClient
      * @return bool True for `{ "valid": true }`, false for
      *     `{ "valid": false }`.
      *
-     * @throws InvalidArgumentException when the identifier is too large, or
-     *     the cloud could not parse it, carrying the cloud's message in the
-     *     latter case.
+     * @throws InvalidArgumentException when a value is far longer than any
+     *     identifier and is refused before the request, or the cloud could
+     *     not parse it, carrying the cloud's message in the latter case.
      * @throws CloudException for any other status.
      * @throws RuntimeException when the cloud cannot be reached.
      */
@@ -323,9 +328,10 @@ final class DidClient
      * @return RedeemResult For a 200, and for a 503 where the context is
      *     {@see ContextOutcome::Unconfirmed} and the caller may retry.
      *
-     * @throws InvalidArgumentException when the identifier is too large, or
-     *     the cloud answered 400 because it was malformed, carrying the
-     *     cloud's message in the latter case.
+     * @throws InvalidArgumentException when a value is far longer than any
+     *     identifier and is refused before the request, or the cloud
+     *     answered 400 because it was malformed, carrying the cloud's
+     *     message in the latter case.
      * @throws NotSupportedException when the host does not offer the
      *     creator context (404).
      * @throws CloudException for any other status.
@@ -458,19 +464,40 @@ final class DidClient
                     "Key list entry {$index} has no string publicKey."
                 );
             }
-            try {
-                $startsAt = new DateTimeImmutable($start);
-            } catch (Throwable $exception) {
+            $startsAt = self::parseStart($start);
+            if ($startsAt === null) {
                 throw new RuntimeException(
-                    "Key list entry {$index} has an invalid start: {$start}",
-                    0,
-                    $exception
+                    "Key list entry {$index} has an invalid start: {$start}"
                 );
             }
             $keys[] = new PublicKey($startsAt, $pem);
         }
         $this->keys = $keys;
         $this->keysFetchedAt = ($this->clock)();
+    }
+
+    /**
+     * Reads the moment a key comes into force from the ISO 8601 form the
+     * cloud writes, being a date, a `T`, a time with optional fractional
+     * seconds, and then `Z` or a numeric offset. Anything else is refused,
+     * because the date constructor turns an empty string, a space, `now`
+     * and other loose words into the current time, which would put a key
+     * that never existed at the head of the schedule.
+     *
+     * @return DateTimeImmutable|null Null when the value is not that form.
+     */
+    private static function parseStart(string $value): ?DateTimeImmutable
+    {
+        $iso = '/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?'
+            . '(Z|[+-]\\d{2}:?\\d{2})$/';
+        if (preg_match($iso, $value) !== 1) {
+            return null;
+        }
+        try {
+            return new DateTimeImmutable($value);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -551,47 +578,21 @@ final class DidClient
      * The identifier as sent on the wire. A {@see FodId} goes in the
      * URL-safe form, which needs no encoding. A string is sent as given, so
      * the cloud judges it, which is what gives the caller the cloud's own
-     * message for a value that does not parse.
+     * message for a value that does not parse. Only a value far longer
+     * than any identifier is refused here, by
+     * {@see DidClient::MAXIMUM_ENCODED_LENGTH}, so that obviously malformed
+     * input costs neither a key fetch nor a call.
      */
     private static function wireForm(FodId|string $fodId): string
     {
-        if ($fodId instanceof FodId) {
-            self::requireMaximumSize($fodId);
-            return $fodId->asBase64Url();
-        }
-        if (strlen($fodId) > self::maximumBase64Length()) {
+        $value = $fodId instanceof FodId ? $fodId->asBase64Url() : $fodId;
+        if (strlen($value) > self::MAXIMUM_ENCODED_LENGTH) {
             throw new InvalidArgumentException(
-                'The value is larger than a 51Did can be.'
+                'The value is far longer than any identifier, so it was '
+                . 'refused without calling the cloud.'
             );
         }
-        return $fodId;
-    }
-
-    /**
-     * Checks a parsed identifier without first creating an unbounded
-     * serialized copy. The definitive byte check is made only after its
-     * variable fields have each been bounded.
-     */
-    private static function maximumSizeValid(FodId $fodId): bool
-    {
-        return strlen($fodId->getSignature()) === 64
-            && strlen($fodId->asByteArray()) <= FodId::MAXIMUM_BYTE_LENGTH;
-    }
-
-    /** Maximum padded Base64 length of a serialized 51Did. */
-    private static function maximumBase64Length(): int
-    {
-        return intdiv(FodId::MAXIMUM_BYTE_LENGTH + 2, 3) * 4;
-    }
-
-    /** Throws when a parsed identifier is larger than the Cloud can issue. */
-    private static function requireMaximumSize(FodId $fodId): void
-    {
-        if (!self::maximumSizeValid($fodId)) {
-            throw new InvalidArgumentException(
-                'The value is larger than a 51Did can be.'
-            );
-        }
+        return $value;
     }
 
     /**

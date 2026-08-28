@@ -36,6 +36,7 @@ use fiftyone\pipeline\did\NotSupportedException;
 use fiftyone\pipeline\did\SignatureOutcome;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 use RuntimeException;
 use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Owid;
@@ -182,6 +183,32 @@ class DidClientTest extends TestCase
     private function lastRequest(): array
     {
         return $this->requests[count($this->requests) - 1];
+    }
+
+    /**
+     * The client's own boundary tolerance, read from the implementation so
+     * that the selection rule and these tests cannot drift apart and the
+     * figure lives in one place.
+     */
+    private static function tolerance(): int
+    {
+        return (new ReflectionClass(DidClient::class))
+            ->getConstant('BOUNDARY_TOLERANCE_SECONDS');
+    }
+
+    /**
+     * A creator domain longer than the public cloud's, as a self-hosted
+     * container deployed under its own name would sign with.
+     */
+    private static function longDomain(): string
+    {
+        return str_repeat('creator-context-', 8) . 'example.com';
+    }
+
+    /** A payload with a creator context section longer than today's. */
+    private static function longContextPayload(): string
+    {
+        return self::payload() . "\x00" . str_repeat("\xAB", 200);
     }
 
     // ----- Construction -----
@@ -331,6 +358,13 @@ class DidClientTest extends TestCase
             ['startsAt' => 123, 'publicKey' => $this->keyA->publicKeyPem()],
             ['startsAt' => 'not a date',
                 'publicKey' => $this->keyA->publicKeyPem()],
+            // A loose word, an empty string or a space must not be read as
+            // the current time, which would put a key that never existed at
+            // the head of the schedule.
+            ['startsAt' => '', 'publicKey' => $this->keyA->publicKeyPem()],
+            ['startsAt' => ' ', 'publicKey' => $this->keyA->publicKeyPem()],
+            ['startsAt' => 'now', 'publicKey' => $this->keyA->publicKeyPem()],
+            ['startsAt' => 'x', 'publicKey' => $this->keyA->publicKeyPem()],
         ];
         foreach ($malformed as $entry) {
             $schedule = $this->schedule();
@@ -447,7 +481,7 @@ class DidClientTest extends TestCase
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $boundary = self::shift(self::at(self::T0), self::WEEK);
-        $tolerance = DidClient::BOUNDARY_TOLERANCE_SECONDS;
+        $tolerance = self::tolerance();
         $justAfter = self::shift($boundary, $tolerance - 60);
         $this->assertTrue($client->verifySignature(
             $this->signedAt($justAfter, $this->keyA)
@@ -463,7 +497,7 @@ class DidClientTest extends TestCase
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $boundary = self::shift(self::at(self::T0), self::WEEK);
-        $tolerance = DidClient::BOUNDARY_TOLERANCE_SECONDS;
+        $tolerance = self::tolerance();
         $justBefore = self::shift($boundary, -($tolerance - 60));
         $this->assertTrue($client->verifySignature(
             $this->signedAt($justBefore, $this->keyB)
@@ -480,7 +514,7 @@ class DidClientTest extends TestCase
         // The refetch for a date nothing covers.
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
-        $tolerance = DidClient::BOUNDARY_TOLERANCE_SECONDS;
+        $tolerance = self::tolerance();
         $before = self::shift(self::at(self::T0), -($tolerance + 60));
         $fodId = $this->signedAt($before, $this->keyA);
         $this->assertFalse($client->verifySignature($fodId));
@@ -539,46 +573,38 @@ class DidClientTest extends TestCase
         // covers.
         $payload = self::payload() . "\x00" . str_repeat("\xAB", 18);
         $this->assertTrue($this->client()->verifySignature(
-            $this->signedAt(
-                $inside,
-                $this->keyB,
-                $payload,
-                Version::Version3,
-                '51d.es'
-            )
+            $this->signedAt($inside, $this->keyB, $payload)
         ));
     }
 
-    public function testVerifySignatureRejectsOversizedPayloadLocally(): void
+    public function testVerifySignatureTrueForALongContextSection(): void
     {
+        // The service accepts a context section of a version it does not
+        // implement at any length, so an older verifier keeps working when
+        // a newer version ships, and this client must do the same.
+        $this->queueJson(200, $this->schedule());
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
-        $payload = self::payload() . str_repeat("\xAB", 20);
-        try {
-            $this->signedAt(
-                $inside,
-                $this->keyB,
-                $payload,
-                Version::Version3,
-                '51d.es'
-            );
-            $this->fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException $exception) {
-            $this->assertStringContainsString('136 bytes', $exception->getMessage());
-        }
-        $this->assertCount(0, $this->requests);
+        $this->assertTrue($this->client()->verifySignature(
+            $this->signedAt($inside, $this->keyB, self::longContextPayload())
+        ));
     }
 
-    public function testVerifySignatureRejectsOversizedEnvelopeLocally(): void
+    public function testVerifySignatureTrueForALongCreatorDomain(): void
     {
+        // The creator domain is a deployment parameter, so a self-hosted
+        // container may sign with a longer one and its identifiers must
+        // still verify.
+        $this->queueJson(200, $this->schedule());
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
-        $payload = self::payload() . str_repeat("\xAB", 19);
-        try {
-            $this->signedAt($inside, $this->keyB, $payload);
-            $this->fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException $exception) {
-            $this->assertStringContainsString('136 bytes', $exception->getMessage());
-        }
-        $this->assertCount(0, $this->requests);
+        $fodId = $this->signedAt(
+            $inside,
+            $this->keyB,
+            null,
+            Version::Version3,
+            self::longDomain()
+        );
+        $this->assertSame(self::longDomain(), $fodId->getDomain());
+        $this->assertTrue($this->client()->verifySignature($fodId));
     }
 
     public function testVerifySignatureTrueForRandomIdentifier(): void
@@ -632,20 +658,20 @@ class DidClientTest extends TestCase
         }
     }
 
-    public function testVerifyAcceptsMaximumPaddedAndUnpaddedValues(): void
+    public function testVerifyAcceptsPaddedAndUnpaddedValues(): void
     {
-        $payload = self::payload() . str_repeat("\xAB", 19);
+        // A long domain and a long context section change nothing about
+        // which forms the cloud is sent.
         $fodId = $this->signedAt(
             self::at(self::T0),
             $this->keyA,
-            $payload,
+            self::longContextPayload(),
             Version::Version3,
-            '51d.es'
+            self::longDomain()
         );
         $padded = $fodId->asBase64();
         $unpadded = $fodId->asBase64Url();
-        $this->assertSame(184, strlen($padded));
-        $this->assertSame(182, strlen($unpadded));
+        $this->assertSame(rtrim(strtr($padded, '+/', '-_'), '='), $unpadded);
         $this->queueJson(200, ['valid' => true]);
         $this->queueJson(200, ['valid' => true]);
         $client = $this->client();
@@ -654,37 +680,18 @@ class DidClientTest extends TestCase
         $this->assertCount(2, $this->requests);
     }
 
-    public function testVerifyRejects185CharactersBeforeTransport(): void
+    public function testVerifyRefusesAnAbsurdlyLongValueBeforeTransport(): void
     {
         try {
-            $this->client()->verify(str_repeat('A', 185));
+            $this->client()->verify(str_repeat('A', 8192));
             $this->fail('Expected an InvalidArgumentException.');
         } catch (InvalidArgumentException $exception) {
             $this->assertStringContainsString(
-                'larger',
+                'far longer',
                 $exception->getMessage()
             );
         }
-        $this->assertCount(0, $this->requests);
-    }
-
-    public function testVerifyRejectsOversizedParsedValueBeforeTransport(): void
-    {
-        try {
-            $this->signedAt(
-                self::at(self::T0),
-                $this->keyA,
-                self::payload() . str_repeat("\xAB", 20),
-                Version::Version3,
-                '51d.es'
-            );
-            $this->fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException $exception) {
-            $this->assertStringContainsString(
-                '136 bytes',
-                $exception->getMessage()
-            );
-        }
+        // Neither a key fetch nor the verify call reached the transport.
         $this->assertCount(0, $this->requests);
     }
 
@@ -855,17 +862,18 @@ class DidClientTest extends TestCase
         }
     }
 
-    public function testRedeemRejectsOversizedIdentifierBeforeTransport(): void
+    public function testRedeemRefusesAnAbsurdlyLongValueBeforeTransport(): void
     {
         try {
-            $this->client()->redeem(str_repeat('A', 185), 'SEALED', 'C');
+            $this->client()->redeem(str_repeat('A', 8192), 'SEALED', 'C');
             $this->fail('Expected an InvalidArgumentException.');
         } catch (InvalidArgumentException $exception) {
             $this->assertStringContainsString(
-                'larger',
+                'far longer',
                 $exception->getMessage()
             );
         }
+        // Neither a key fetch nor the redeem call reached the transport.
         $this->assertCount(0, $this->requests);
     }
 

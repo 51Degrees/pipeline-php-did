@@ -42,12 +42,6 @@ so `getLicenseId()` is the field's raw value and identifies nothing outside
 51Degrees. Such an identifier also carries a context section after the value,
 which the reader keeps in the payload and does not interpret.
 
-The complete serialized envelope of a valid 51Did is at most 136 bytes.
-`FodId::MAXIMUM_BYTE_LENGTH` exposes that boundary for callers that want to
-check raw input before parsing; every `FodId` construction path also enforces
-it and throws `InvalidArgumentException` for a longer value. This is a limit
-on the identifier itself, not on an HTTP response that happens to carry one.
-
 ## Requirements & OWID dependency
 
 PHP **>= 8.1** (the OWID library requires it; 7.4 is end-of-life). `FodId`
@@ -72,7 +66,8 @@ use fiftyone\pipeline\did\FodId;
 use fiftyone\pipeline\did\IdType;
 
 // Either base64 alphabet is accepted, standard as the cloud issues it or
-// URL-safe as a page puts it in a link, with or without padding.
+// URL-safe as a page puts it in a link, with or without padding, and
+// surrounding whitespace such as a trailing newline is ignored.
 $fodId = FodId::fromBase64($base64FromCloudService);
 
 $flags     = $fodId->getFlags();
