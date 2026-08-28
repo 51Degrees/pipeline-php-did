@@ -482,11 +482,15 @@ class DidClientTest extends TestCase
         $client = $this->client();
         $boundary = self::shift(self::at(self::T0), self::WEEK);
         $tolerance = self::tolerance();
+        // A minute inside the tolerance, where the earlier key is tried,
+        // and an hour outside it, where it is not. The two sit far apart on
+        // purpose, because a pair of dates a minute either side of the real
+        // figure would tell a reader where that figure falls.
         $justAfter = self::shift($boundary, $tolerance - 60);
         $this->assertTrue($client->verifySignature(
             $this->signedAt($justAfter, $this->keyA)
         ));
-        $wellAfter = self::shift($boundary, $tolerance + 60);
+        $wellAfter = self::shift($boundary, $tolerance + 3600);
         $this->assertFalse($client->verifySignature(
             $this->signedAt($wellAfter, $this->keyA)
         ));
@@ -498,11 +502,12 @@ class DidClientTest extends TestCase
         $client = $this->client();
         $boundary = self::shift(self::at(self::T0), self::WEEK);
         $tolerance = self::tolerance();
+        // A minute inside the tolerance and an hour outside it, as above.
         $justBefore = self::shift($boundary, -($tolerance - 60));
         $this->assertTrue($client->verifySignature(
             $this->signedAt($justBefore, $this->keyB)
         ));
-        $wellBefore = self::shift($boundary, -($tolerance + 60));
+        $wellBefore = self::shift($boundary, -($tolerance + 3600));
         $this->assertFalse($client->verifySignature(
             $this->signedAt($wellBefore, $this->keyB)
         ));
@@ -515,7 +520,9 @@ class DidClientTest extends TestCase
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $tolerance = self::tolerance();
-        $before = self::shift(self::at(self::T0), -($tolerance + 60));
+        // Far enough before the first key that the tolerance does not
+        // reach the date, so nothing in the schedule can have signed it.
+        $before = self::shift(self::at(self::T0), -($tolerance + 3600));
         $fodId = $this->signedAt($before, $this->keyA);
         $this->assertFalse($client->verifySignature($fodId));
         $this->queueJson(200, $this->schedule());
