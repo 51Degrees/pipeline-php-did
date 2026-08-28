@@ -29,6 +29,7 @@ use Closure;
 use Composer\InstalledVersions;
 use DateTimeImmutable;
 use InvalidArgumentException;
+use JsonException;
 use RuntimeException;
 use SwanCommunity\Owid\Version;
 use Throwable;
@@ -173,8 +174,8 @@ final class DidClient
      * @return PublicKey[]
      *
      * @throws CloudException when the key endpoint answers other than 200.
-     * @throws RuntimeException when the cloud cannot be reached or the
-     *     answer is not a key list.
+     * @throws RuntimeException when the cloud cannot be reached, the answer
+     *     is not a key list, or any entry in the list is malformed.
      */
     public function publicKeys(): array
     {
@@ -388,11 +389,12 @@ final class DidClient
 
     /**
      * Fetches the key list from `GET {endpoint}id/key/{resource}`. Each
-     * entry's start is `startsAt`, or `created` where a host does not yet
-     * emit `startsAt`. `weekStart` is ignored.
+     * entry's start is `startsAt`, or the compatibility field `created`
+     * when `startsAt` is absent. `weekStart` is ignored.
      *
      * @throws CloudException when the endpoint answers other than 200.
-     * @throws RuntimeException when the answer is not a JSON array.
+     * @throws RuntimeException when the answer is not a JSON array or any
+     *     entry is malformed.
      */
     private function fetchKeys(): void
     {
@@ -408,7 +410,21 @@ final class DidClient
                 . self::excerpt($response['body'])
             );
         }
-        $json = json_decode($response['body'], true);
+        try {
+            $json = json_decode(
+                $response['body'],
+                false,
+                512,
+                JSON_THROW_ON_ERROR
+            );
+        } catch (JsonException $exception) {
+            throw new RuntimeException(
+                'The key endpoint did not answer with a key list: '
+                . self::excerpt($response['body']),
+                0,
+                $exception
+            );
+        }
         if (!is_array($json)) {
             throw new RuntimeException(
                 'The key endpoint did not answer with a key list: '
@@ -416,19 +432,33 @@ final class DidClient
             );
         }
         $keys = [];
-        foreach ($json as $entry) {
-            if (!is_array($entry)) {
-                continue;
+        foreach ($json as $index => $entry) {
+            if (!is_object($entry)) {
+                throw new RuntimeException(
+                    "Key list entry {$index} is not an object."
+                );
             }
-            $start = $entry['startsAt'] ?? $entry['created'] ?? null;
-            $pem = $entry['publicKey'] ?? null;
-            if (!is_string($start) || !is_string($pem)) {
-                continue;
+            $start = $entry->startsAt ?? $entry->created ?? null;
+            if (!is_string($start)) {
+                throw new RuntimeException(
+                    "Key list entry {$index} has no string startsAt or "
+                    . 'created.'
+                );
+            }
+            $pem = $entry->publicKey ?? null;
+            if (!is_string($pem)) {
+                throw new RuntimeException(
+                    "Key list entry {$index} has no string publicKey."
+                );
             }
             try {
                 $startsAt = new DateTimeImmutable($start);
             } catch (Throwable $exception) {
-                continue;
+                throw new RuntimeException(
+                    "Key list entry {$index} has an invalid start: {$start}",
+                    0,
+                    $exception
+                );
             }
             $keys[] = new PublicKey($startsAt, $pem);
         }

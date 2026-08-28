@@ -307,11 +307,47 @@ class DidClientTest extends TestCase
         }
     }
 
-    public function testPublicKeysNonListThrows(): void
+    public function testPublicKeysInvalidJsonThrows(): void
     {
         $this->queue(200, 'not json');
         $this->expectException(RuntimeException::class);
         $this->client()->publicKeys();
+    }
+
+    public function testPublicKeysJsonObjectThrows(): void
+    {
+        $this->queue(200, '{"publicKey":"not a list"}');
+        $this->expectException(RuntimeException::class);
+        $this->client()->publicKeys();
+    }
+
+    public function testPublicKeysRejectsAnyMalformedEntry(): void
+    {
+        $malformed = [
+            'not an object',
+            ['publicKey' => $this->keyA->publicKeyPem()],
+            ['startsAt' => self::T0],
+            ['startsAt' => 123, 'publicKey' => $this->keyA->publicKeyPem()],
+            ['startsAt' => 'not a date',
+                'publicKey' => $this->keyA->publicKeyPem()],
+        ];
+        foreach ($malformed as $entry) {
+            $schedule = $this->schedule();
+            array_splice($schedule, 1, 0, [$entry]);
+            $this->queueJson(200, $schedule);
+            $client = $this->client();
+            try {
+                $client->publicKeys();
+                $this->fail('Expected a malformed key entry to be rejected.');
+            } catch (RuntimeException $exception) {
+                $this->assertStringContainsString(
+                    'Key list entry 1',
+                    $exception->getMessage()
+                );
+            }
+            $this->queueJson(200, $this->schedule());
+            $this->assertCount(3, $client->publicKeys());
+        }
     }
 
     public function testPublicKeyForNoRefetchInsideTheSchedule(): void
