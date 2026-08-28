@@ -93,6 +93,11 @@ final class DidClient
     /** Seconds the default transport waits for the cloud. */
     private const TIMEOUT_SECONDS = 30;
 
+    /** Limits of a 51Did issued by the Cloud. */
+    private const MAXIMUM_PAYLOAD_LENGTH = 56;
+    private const MAXIMUM_BYTE_LENGTH = 136;
+    private const MAXIMUM_BASE64_LENGTH = 184;
+
     private string $resourceKey;
     private ?string $licenceKey;
     private string $endpoint;
@@ -196,10 +201,12 @@ final class DidClient
      * answer comes from the cache.
      *
      * @throws CloudException when the key endpoint answers other than 200.
+     * @throws InvalidArgumentException when the identifier is too large.
      * @throws RuntimeException when the cloud cannot be reached.
      */
     public function publicKeyFor(FodId $fodId): ?PublicKey
     {
+        self::requireMaximumSize($fodId);
         $at = $fodId->getDate();
         return self::inForceAt($this->keysCovering($at), $at);
     }
@@ -209,10 +216,10 @@ final class DidClient
      * keys, mirroring the check the cloud's verify endpoint makes.
      *
      * 1. The envelope version must be 3.
-     * 2. The payload must be at least the base length for its type, being
+     * 2. The payload and envelope must be within the sizes the cloud issues,
+     *    and the payload must be at least the base length for its type, being
      *    the 5 header bytes plus a 32 byte match key, or 16 for a Random
-     *    identifier. Anything beyond the base is a creator context section
-     *    and is accepted, since the signature covers the whole payload.
+     *    identifier.
      * 3. The candidate keys are the entry in force at the identifier's
      *    date, plus the entry in force a small tolerance earlier and the
      *    entry in force the same tolerance later where those differ, so an
@@ -232,6 +239,9 @@ final class DidClient
     public function verifySignature(FodId $fodId): bool
     {
         if ($fodId->getVersion() !== Version::Version3) {
+            return false;
+        }
+        if (!self::maximumSizeValid($fodId)) {
             return false;
         }
         $payload = $fodId->getPayload();
@@ -267,8 +277,9 @@ final class DidClient
      * @return bool True for `{ "valid": true }`, false for
      *     `{ "valid": false }`.
      *
-     * @throws InvalidArgumentException when the cloud could not parse the
-     *     identifier, carrying the cloud's message.
+     * @throws InvalidArgumentException when the identifier is too large, or
+     *     the cloud could not parse it, carrying the cloud's message in the
+     *     latter case.
      * @throws CloudException for any other status.
      * @throws RuntimeException when the cloud cannot be reached.
      */
@@ -317,8 +328,9 @@ final class DidClient
      * @return RedeemResult For a 200, and for a 503 where the context is
      *     {@see ContextOutcome::Unconfirmed} and the caller may retry.
      *
-     * @throws InvalidArgumentException when the cloud answered 400 because
-     *     the identifier was malformed, carrying the cloud's message.
+     * @throws InvalidArgumentException when the identifier is too large, or
+     *     the cloud answered 400 because it was malformed, carrying the
+     *     cloud's message in the latter case.
      * @throws NotSupportedException when the host does not offer the
      *     creator context (404).
      * @throws CloudException for any other status.
@@ -548,7 +560,42 @@ final class DidClient
      */
     private static function wireForm(FodId|string $fodId): string
     {
-        return $fodId instanceof FodId ? $fodId->asBase64Url() : $fodId;
+        if ($fodId instanceof FodId) {
+            self::requireMaximumSize($fodId);
+            return $fodId->asBase64Url();
+        }
+        if (strlen($fodId) > self::MAXIMUM_BASE64_LENGTH) {
+            throw new InvalidArgumentException(
+                'The value is larger than a 51Did can be.'
+            );
+        }
+        return $fodId;
+    }
+
+    /**
+     * Checks a parsed identifier without first creating an unbounded
+     * serialized copy. The definitive byte check is made only after its
+     * variable fields have each been bounded.
+     */
+    private static function maximumSizeValid(FodId $fodId): bool
+    {
+        if (strlen($fodId->getPayload()) > self::MAXIMUM_PAYLOAD_LENGTH
+            || strlen($fodId->getDomain()) > self::MAXIMUM_BYTE_LENGTH
+            || strlen($fodId->getSignature()) !== 64
+        ) {
+            return false;
+        }
+        return strlen($fodId->asByteArray()) <= self::MAXIMUM_BYTE_LENGTH;
+    }
+
+    /** Throws when a parsed identifier is larger than the Cloud can issue. */
+    private static function requireMaximumSize(FodId $fodId): void
+    {
+        if (!self::maximumSizeValid($fodId)) {
+            throw new InvalidArgumentException(
+                'The value is larger than a 51Did can be.'
+            );
+        }
     }
 
     /**

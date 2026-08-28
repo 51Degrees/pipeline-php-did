@@ -116,9 +116,10 @@ class DidClientTest extends TestCase
         DateTimeImmutable $date,
         Crypto $crypto,
         ?string $payload = null,
-        Version $version = Version::Version3
+        Version $version = Version::Version3,
+        string $domain = self::DOMAIN
     ): FodId {
-        $owid = new Owid(self::DOMAIN, $date, $payload ?? self::payload());
+        $owid = new Owid($domain, $date, $payload ?? self::payload());
         $owid->version = $version;
         $owid->signature = $crypto->signByteArray($owid->dataForCrypto());
         return FodId::fromOwid($owid);
@@ -538,8 +539,38 @@ class DidClientTest extends TestCase
         // covers.
         $payload = self::payload() . "\x00" . str_repeat("\xAB", 18);
         $this->assertTrue($this->client()->verifySignature(
-            $this->signedAt($inside, $this->keyB, $payload)
+            $this->signedAt(
+                $inside,
+                $this->keyB,
+                $payload,
+                Version::Version3,
+                '51d.es'
+            )
         ));
+    }
+
+    public function testVerifySignatureRejectsOversizedPayloadLocally(): void
+    {
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $payload = self::payload() . str_repeat("\xAB", 20);
+        $fodId = $this->signedAt(
+            $inside,
+            $this->keyB,
+            $payload,
+            Version::Version3,
+            '51d.es'
+        );
+        $this->assertFalse($this->client()->verifySignature($fodId));
+        $this->assertCount(0, $this->requests);
+    }
+
+    public function testVerifySignatureRejectsOversizedEnvelopeLocally(): void
+    {
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $payload = self::payload() . str_repeat("\xAB", 19);
+        $fodId = $this->signedAt($inside, $this->keyB, $payload);
+        $this->assertFalse($this->client()->verifySignature($fodId));
+        $this->assertCount(0, $this->requests);
     }
 
     public function testVerifySignatureTrueForRandomIdentifier(): void
@@ -591,6 +622,63 @@ class DidClientTest extends TestCase
                 $exception->getMessage()
             );
         }
+    }
+
+    public function testVerifyAcceptsMaximumPaddedAndUnpaddedValues(): void
+    {
+        $payload = self::payload() . str_repeat("\xAB", 19);
+        $fodId = $this->signedAt(
+            self::at(self::T0),
+            $this->keyA,
+            $payload,
+            Version::Version3,
+            '51d.es'
+        );
+        $padded = $fodId->asBase64();
+        $unpadded = $fodId->asBase64Url();
+        $this->assertSame(184, strlen($padded));
+        $this->assertSame(182, strlen($unpadded));
+        $this->queueJson(200, ['valid' => true]);
+        $this->queueJson(200, ['valid' => true]);
+        $client = $this->client();
+        $this->assertTrue($client->verify($padded));
+        $this->assertTrue($client->verify($unpadded));
+        $this->assertCount(2, $this->requests);
+    }
+
+    public function testVerifyRejects185CharactersBeforeTransport(): void
+    {
+        try {
+            $this->client()->verify(str_repeat('A', 185));
+            $this->fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString(
+                'larger',
+                $exception->getMessage()
+            );
+        }
+        $this->assertCount(0, $this->requests);
+    }
+
+    public function testVerifyRejectsOversizedParsedValueBeforeTransport(): void
+    {
+        $fodId = $this->signedAt(
+            self::at(self::T0),
+            $this->keyA,
+            self::payload() . str_repeat("\xAB", 20),
+            Version::Version3,
+            '51d.es'
+        );
+        try {
+            $this->client()->verify($fodId);
+            $this->fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString(
+                'larger',
+                $exception->getMessage()
+            );
+        }
+        $this->assertCount(0, $this->requests);
     }
 
     public function testVerifyOtherStatusThrowsCloudException(): void
@@ -758,6 +846,20 @@ class DidClientTest extends TestCase
                 $exception->getMessage()
             );
         }
+    }
+
+    public function testRedeemRejectsOversizedIdentifierBeforeTransport(): void
+    {
+        try {
+            $this->client()->redeem(str_repeat('A', 185), 'SEALED', 'C');
+            $this->fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString(
+                'larger',
+                $exception->getMessage()
+            );
+        }
+        $this->assertCount(0, $this->requests);
     }
 
     public function testRedeem404ThrowsNotSupported(): void
