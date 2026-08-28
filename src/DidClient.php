@@ -83,11 +83,6 @@ final class DidClient
     /** How old the cached key list may be before it is fetched again. */
     public const KEY_LIST_MAX_AGE_SECONDS = 24 * 60 * 60;
 
-    /**
-     * How far either side of a key boundary a neighbouring key is also
-     * tried, matching the short tolerance the cloud applies. Internal to
-     * the selection rule rather than a published figure.
-     */
     private const BOUNDARY_TOLERANCE_SECONDS = 15 * 60;
 
     /**
@@ -224,10 +219,9 @@ final class DidClient
      *    identifier. Anything beyond the base is a creator context section
      *    and is accepted, since the signature covers the whole payload.
      * 3. The candidate keys are the entry in force at the identifier's
-     *    date, plus the entry in force a small tolerance earlier and the
-     *    entry in force the same tolerance later where those differ, so an
-     *    identifier dated close to a key boundary still verifies. They are
-     *    tried in that order and the first that verifies answers true.
+     *    date, plus the neighbouring entry either side of a nearby key
+     *    boundary where those differ. They are tried in that order and
+     *    the first that verifies answers true.
      *    Every earlier key is never tried, because one leaked key from any
      *    past period could then sign identifiers dated today.
      * 4. No candidate, meaning the date precedes the whole schedule,
@@ -526,10 +520,9 @@ final class DidClient
 
     /**
      * The entries that may have signed something created at the moment,
-     * best first. The entry in force, then the entry in force a tolerance
-     * earlier (the previous key, just after a boundary), then the entry in
-     * force a tolerance later (the next key, just before a boundary), each
-     * added only where it differs from those already chosen.
+     * best first. The entry in force, then the neighbouring entry either
+     * side of a nearby key boundary, each added only where it differs
+     * from those already chosen.
      *
      * @param PublicKey[] $keys
      * @return PublicKey[]
