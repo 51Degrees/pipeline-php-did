@@ -82,6 +82,10 @@ final class FodId
     public const RANDOM_PAYLOAD_LENGTH = self::HEADER_LENGTH + self::GUID_LENGTH;
     /** Minimum byte length of a Probabilistic or HashedEmail 51Did payload. */
     public const PAYLOAD_LENGTH = self::HASH_OFFSET + self::HASH_LENGTH;
+    /** Largest possible byte length of a serialized 51Did envelope. */
+    public const MAXIMUM_BYTE_LENGTH = 136;
+
+    private const MAXIMUM_PAYLOAD_LENGTH = 56;
 
     private Owid $owid;
     private int $flags;
@@ -97,14 +101,25 @@ final class FodId
      * later mutates the OWID they passed in. The OWID must therefore be signed
      * (serializable).
      *
-     * @throws InvalidArgumentException when the payload is shorter than the
-     *                                  minimum for its identifier type.
+     * @throws InvalidArgumentException when the envelope exceeds
+     *     {@see FodId::MAXIMUM_BYTE_LENGTH} or its payload length is outside
+     *     the range a 51Did can have.
      * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
      *                                           serialized (e.g. it is unsigned)
      */
     public function __construct(Owid $owid)
     {
-        $this->owid = Owid::fromByteArray($owid->asByteArray());
+        if (strlen($owid->domain) > self::MAXIMUM_BYTE_LENGTH) {
+            throw self::tooLong();
+        }
+        $wire = $owid->asByteArray();
+        if (strlen($wire) > self::MAXIMUM_BYTE_LENGTH) {
+            throw self::tooLong(strlen($wire));
+        }
+        if (strlen($owid->payload) > self::MAXIMUM_PAYLOAD_LENGTH) {
+            throw self::payloadTooLong(strlen($owid->payload));
+        }
+        $this->owid = Owid::fromByteArray($wire);
         $payload = $this->owid->payload;
         $length = strlen($payload);
         if ($length < self::HEADER_LENGTH) {
@@ -149,10 +164,16 @@ final class FodId
      *
      * @throws \SwanCommunity\Owid\OwidException when the string is not valid
      *                                           base64 or not a valid OWID.
+     * @throws InvalidArgumentException when the decoded envelope is too long.
      */
     public static function fromBase64(string $base64): self
     {
-        return new self(Owid::fromBase64(self::toStandardBase64($base64)));
+        $standard = self::toStandardBase64($base64);
+        $maximumBase64Length = (int) ceil(self::MAXIMUM_BYTE_LENGTH / 3) * 4;
+        if (strlen($standard) > $maximumBase64Length) {
+            throw self::tooLong();
+        }
+        return new self(Owid::fromBase64($standard));
     }
 
     /**
@@ -179,10 +200,33 @@ final class FodId
      *
      * @throws \SwanCommunity\Owid\OwidException when the bytes are not a valid
      *                                           OWID.
+     * @throws InvalidArgumentException when the buffer is too long.
      */
     public static function fromByteArray(string $buffer): self
     {
+        if (strlen($buffer) > self::MAXIMUM_BYTE_LENGTH) {
+            throw self::tooLong(strlen($buffer));
+        }
         return new self(Owid::fromByteArray($buffer));
+    }
+
+    private static function tooLong(?int $actual = null): InvalidArgumentException
+    {
+        $detail = $actual === null ? '' : sprintf('; got %d', $actual);
+        return new InvalidArgumentException(sprintf(
+            'A 51Did must not exceed %d bytes%s.',
+            self::MAXIMUM_BYTE_LENGTH,
+            $detail
+        ));
+    }
+
+    private static function payloadTooLong(int $actual): InvalidArgumentException
+    {
+        return new InvalidArgumentException(sprintf(
+            'A 51Did payload must not exceed %d bytes; got %d.',
+            self::MAXIMUM_PAYLOAD_LENGTH,
+            $actual
+        ));
     }
 
     /**
@@ -194,6 +238,7 @@ final class FodId
      *
      * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
      *                                           serialized (e.g. it is unsigned)
+     * @throws InvalidArgumentException when the envelope is too long.
      */
     public static function fromOwid(Owid $owid): self
     {

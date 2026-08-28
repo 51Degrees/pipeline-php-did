@@ -553,14 +553,18 @@ class DidClientTest extends TestCase
     {
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
         $payload = self::payload() . str_repeat("\xAB", 20);
-        $fodId = $this->signedAt(
-            $inside,
-            $this->keyB,
-            $payload,
-            Version::Version3,
-            '51d.es'
-        );
-        $this->assertFalse($this->client()->verifySignature($fodId));
+        try {
+            $this->signedAt(
+                $inside,
+                $this->keyB,
+                $payload,
+                Version::Version3,
+                '51d.es'
+            );
+            $this->fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('136 bytes', $exception->getMessage());
+        }
         $this->assertCount(0, $this->requests);
     }
 
@@ -568,8 +572,12 @@ class DidClientTest extends TestCase
     {
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
         $payload = self::payload() . str_repeat("\xAB", 19);
-        $fodId = $this->signedAt($inside, $this->keyB, $payload);
-        $this->assertFalse($this->client()->verifySignature($fodId));
+        try {
+            $this->signedAt($inside, $this->keyB, $payload);
+            $this->fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('136 bytes', $exception->getMessage());
+        }
         $this->assertCount(0, $this->requests);
     }
 
@@ -662,19 +670,18 @@ class DidClientTest extends TestCase
 
     public function testVerifyRejectsOversizedParsedValueBeforeTransport(): void
     {
-        $fodId = $this->signedAt(
-            self::at(self::T0),
-            $this->keyA,
-            self::payload() . str_repeat("\xAB", 20),
-            Version::Version3,
-            '51d.es'
-        );
         try {
-            $this->client()->verify($fodId);
+            $this->signedAt(
+                self::at(self::T0),
+                $this->keyA,
+                self::payload() . str_repeat("\xAB", 20),
+                Version::Version3,
+                '51d.es'
+            );
             $this->fail('Expected an InvalidArgumentException.');
         } catch (InvalidArgumentException $exception) {
             $this->assertStringContainsString(
-                'larger',
+                '136 bytes',
                 $exception->getMessage()
             );
         }

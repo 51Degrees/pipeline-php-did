@@ -93,11 +93,6 @@ final class DidClient
     /** Seconds the default transport waits for the cloud. */
     private const TIMEOUT_SECONDS = 30;
 
-    /** Limits of a 51Did issued by the Cloud. */
-    private const MAXIMUM_PAYLOAD_LENGTH = 56;
-    private const MAXIMUM_BYTE_LENGTH = 136;
-    private const MAXIMUM_BASE64_LENGTH = 184;
-
     private string $resourceKey;
     private ?string $licenceKey;
     private string $endpoint;
@@ -564,7 +559,7 @@ final class DidClient
             self::requireMaximumSize($fodId);
             return $fodId->asBase64Url();
         }
-        if (strlen($fodId) > self::MAXIMUM_BASE64_LENGTH) {
+        if (strlen($fodId) > self::maximumBase64Length()) {
             throw new InvalidArgumentException(
                 'The value is larger than a 51Did can be.'
             );
@@ -579,13 +574,14 @@ final class DidClient
      */
     private static function maximumSizeValid(FodId $fodId): bool
     {
-        if (strlen($fodId->getPayload()) > self::MAXIMUM_PAYLOAD_LENGTH
-            || strlen($fodId->getDomain()) > self::MAXIMUM_BYTE_LENGTH
-            || strlen($fodId->getSignature()) !== 64
-        ) {
-            return false;
-        }
-        return strlen($fodId->asByteArray()) <= self::MAXIMUM_BYTE_LENGTH;
+        return strlen($fodId->getSignature()) === 64
+            && strlen($fodId->asByteArray()) <= FodId::MAXIMUM_BYTE_LENGTH;
+    }
+
+    /** Maximum padded Base64 length of a serialized 51Did. */
+    private static function maximumBase64Length(): int
+    {
+        return intdiv(FodId::MAXIMUM_BYTE_LENGTH + 2, 3) * 4;
     }
 
     /** Throws when a parsed identifier is larger than the Cloud can issue. */
