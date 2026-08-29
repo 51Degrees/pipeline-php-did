@@ -13,9 +13,11 @@
  *   - dropping the requirement on swan-community/owid, which is not on
  *     Packagist, and carrying across the PHP extensions that library
  *     needs so the consumer still gets them checked,
- *   - autoloading the copied OWID source under its own namespace, and
- *   - stating both licences, because the published archive carries the
- *     Apache-2.0 files as well as our own EUPL-1.2 ones.
+ *   - autoloading the copied OWID source under its own namespace.
+ *
+ * The licence field is not touched. The copied files carry their own
+ * Apache-2.0 licence text and a notice beside them, which is what
+ * carries the attribution.
  *
  * Usage:
  *
@@ -27,8 +29,6 @@ declare(strict_types=1);
 
 const OWID_PACKAGE = 'swan-community/owid';
 const OWID_NAMESPACE = 'SwanCommunity\\Owid\\';
-const PACKAGE_LICENCE = 'EUPL-1.2';
-const OWID_LICENCE = 'Apache-2.0';
 
 function fail(string $message): never
 {
@@ -91,16 +91,10 @@ foreach ($owid['require'] ?? [] as $name => $constraint) {
 }
 $package['require'] = $require;
 
-// Composer reads a bare list of licences as a choice between them and an
-// SPDX expression as a combination, and the published archive carries
-// files under both, so state the combination.
-if (($package['license'] ?? null) !== PACKAGE_LICENCE) {
-    fail(
-        'expected the package licence to be ' . PACKAGE_LICENCE
-        . ', so this script is out of date with the package'
-    );
-}
-$package['license'] = '(' . PACKAGE_LICENCE . ' AND ' . OWID_LICENCE . ')';
+// The licence field is left exactly as the repository states it. The
+// copied OWID files carry their own Apache-2.0 licence text and a notice
+// naming where they came from in the directory they sit in, and that is
+// what carries the attribution.
 
 $autoload = $package['autoload']['psr-4'] ?? [];
 $autoload[OWID_NAMESPACE] = rtrim($owidAutoloadPath, '/') . '/';

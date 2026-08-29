@@ -57,14 +57,77 @@ composer install --no-dev
 php examples/fodid_example.php
 ```
 
-## Still to be done once, by a person
+## Setting up, once, by a person
 
-The package has to be submitted to Packagist under the 51Degrees account
-at https://packagist.org/packages/submit, giving the repository URL
-https://github.com/51Degrees/pipeline-php-did. Submitting also asks
-Packagist to install its GitHub hook, which is what makes later tags
-appear without anyone doing anything. Nothing in this repository can do
-that step, because it needs the account.
+Two things have to be done once, in this order, and neither can be done
+from this repository. Do both before anyone tags a real release.
+
+### 1. Put the package on Packagist
+
+Sign in to Packagist with the 51Degrees account first. A personal
+account publishes the package under the wrong owner and it cannot be
+moved afterwards without asking Packagist.
+
+1. Go to https://packagist.org/packages/submit
+2. Paste https://github.com/51Degrees/pipeline-php-did into the
+   repository URL box, press Check, then Submit.
+3. Submitting also asks GitHub to install the Packagist hook on the
+   repository, and that hook is what makes later tags appear on
+   Packagist on their own. There is nothing else to set up for it.
+
+Check afterwards that
+
+- https://packagist.org/packages/51degrees/fiftyone.pipeline.did loads
+  and names the 51Degrees account as the maintainer,
+- the repository Settings, then Webhooks, lists a Packagist hook with a
+  green tick against its last delivery, and
+- the package page says there are no released versions, which is right
+  at this point because no version tag exists yet.
+
+### 2. Run the workflow as a dry run
+
+The Publish workflow has never run on GitHub, because running it for
+real publishes. The dry run is its first execution, so read it as a test
+of the workflow as much as of the package.
+
+1. On GitHub open Actions, choose Publish in the list on the left, then
+   press Run workflow.
+2. Leave the branch as main, which is where releases are cut from. Put
+   the version you mean to release first, for example 1.0.0, in the
+   version box. Tick dryrun.
+3. Press Run workflow.
+
+A good result looks like this.
+
+- Every step green.
+- "Check the package the way a consumer sees it" ends with the unit
+  tests passing and the example printing `Verifies  : true`.
+- "Check that the published tag archives with the OWID source" prints
+  the file list of the archive, which includes
+  `third-party/swan-community/owid/src/Owid.php`.
+- "Push the published tag" is skipped and no new tag appears in the
+  repository.
+- An artifact named `package-<version>` is attached to the run.
+
+Download that artifact and check inside it before anyone tags for real.
+
+- `composer.json` has no `repositories` block and no requirement on
+  `swan-community/owid`.
+- `composer.json` autoloads `SwanCommunity\Owid\` from
+  `third-party/swan-community/owid/src/`, and states the licence as
+  `EUPL-1.2`.
+- `third-party/swan-community/owid/src` holds the seven OWID PHP files,
+  with `LICENSE` and `NOTICE.md` beside them, and `NOTICE.md` names the
+  upstream repository and the commit the copy came from.
+- `src`, `tests`, `examples`, `readme.md`, `phpunit.xml` and the root
+  `LICENSE` are all there, and there is no `owid-php` directory.
+
+Only when both of those are right, tag a real release.
+
+```bash
+git tag release/1.0.0
+git push origin release/1.0.0
+```
 
 ## What differs from the other 51Degrees PHP packages
 
