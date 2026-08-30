@@ -263,6 +263,26 @@ class FodIdTest extends TestCase
         $this->assertSame(FodId::HASH_LENGTH, strlen($fod->getHash()));
     }
 
+    public function testLongDomainAndLongContextSectionAreRead(): void
+    {
+        // The creator domain is a deployment parameter, and a context
+        // section of a version the reader does not implement may be any
+        // length, so neither may stop an identifier parsing.
+        $domain = str_repeat('creator-context-', 8) . 'example.com';
+        $payload = self::canonicalPayload() . str_repeat("\xCC", 200);
+        $owid = new Owid($domain, null, $payload);
+        (new Creator($domain, $this->creator->crypto()))->sign($owid);
+        foreach ([
+            FodId::fromOwid($owid),
+            FodId::fromByteArray($owid->asByteArray()),
+            FodId::fromBase64($owid->asBase64()),
+        ] as $fod) {
+            $this->assertSame($domain, $fod->getDomain());
+            $this->assertSame($payload, $fod->getPayload());
+            $this->assertSame(self::canonicalHash(), $fod->getHash());
+        }
+    }
+
     public function testIsCryptographicallyVerifiable(): void
     {
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
@@ -420,5 +440,123 @@ class FodIdTest extends TestCase
         $this->assertSame($fod1->getLicenseId(), $fod2->getLicenseId());
         $this->assertSame($fod1->getHash(), $fod2->getHash());
         $this->assertSame($fod1->getDomain(), $fod2->getDomain());
+    }
+
+    // ----- Both base64 alphabets, asBase64Url and getDateMinutes -----
+
+    /**
+     * A signed envelope whose standard base64 form contains at least one
+     * of the two characters the URL-safe alphabet replaces, so the forms
+     * under test are distinct strings. Signatures are random, so a few
+     * attempts may be needed.
+     */
+    private function envelopeWithAlphabetCharacters(): string
+    {
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            $standard = $this->signedOwidBase64(self::canonicalPayload());
+            if (strpbrk($standard, '+/') !== false) {
+                return $standard;
+            }
+        }
+        $this->fail('No envelope with + or / after 100 attempts.');
+    }
+
+    public function testFromBase64AcceptsStandardUrlSafeAndUnpaddedForms(): void
+    {
+        $standard = $this->envelopeWithAlphabetCharacters();
+        $urlSafe = strtr($standard, '+/', '-_');
+        $unpadded = rtrim($urlSafe, '=');
+        $this->assertNotSame($standard, $urlSafe);
+
+        $fromStandard = FodId::fromBase64($standard);
+        $fromUrlSafe = FodId::fromBase64($urlSafe);
+        $fromUnpadded = FodId::fromBase64($unpadded);
+        $this->assertSame($fromStandard->asByteArray(), $fromUrlSafe->asByteArray());
+        $this->assertSame($fromStandard->asByteArray(), $fromUnpadded->asByteArray());
+        $this->assertSame(self::canonicalHash(), $fromUnpadded->getHash());
+        $this->assertSame(self::CANONICAL_LICENSE_ID, $fromUnpadded->getLicenseId());
+    }
+
+    public function testToStandardBase64RestoresAlphabetAndPadding(): void
+    {
+        $standard = $this->envelopeWithAlphabetCharacters();
+        $unpadded = rtrim(strtr($standard, '+/', '-_'), '=');
+        $this->assertSame($standard, FodId::toStandardBase64($unpadded));
+        $this->assertSame($standard, FodId::toStandardBase64($standard));
+        $this->assertSame('QQ==', FodId::toStandardBase64('QQ'));
+        $this->assertSame('QUI=', FodId::toStandardBase64('QUI'));
+        $this->assertSame('QUJD', FodId::toStandardBase64('QUJD'));
+    }
+
+    public function testSurroundingWhitespaceIsIgnored(): void
+    {
+        // A value read from a header, a file or a form often carries a
+        // newline or a space, and base64 decoding skips those, so the
+        // padding has to be counted from the trimmed string.
+        $standard = $this->envelopeWithAlphabetCharacters();
+        $clean = rtrim(strtr($standard, '+/', '-_'), '=');
+        $expected = FodId::fromBase64($clean)->asByteArray();
+        foreach ([$clean . "\n", ' ' . $clean, $clean . ' '] as $given) {
+            $this->assertSame(
+                $expected,
+                FodId::fromBase64($given)->asByteArray()
+            );
+        }
+        $this->assertSame($standard, FodId::toStandardBase64($clean . "\n"));
+    }
+
+    public function testAsBase64UrlRoundTrips(): void
+    {
+        $standard = $this->envelopeWithAlphabetCharacters();
+        $fod = FodId::fromBase64($standard);
+        $urlSafe = $fod->asBase64Url();
+        $this->assertSame(0, preg_match('#[+/=]#', $urlSafe));
+        $this->assertSame(rtrim(strtr($standard, '+/', '-_'), '='), $urlSafe);
+        $again = FodId::fromBase64($urlSafe);
+        $this->assertSame($fod->asByteArray(), $again->asByteArray());
+        $this->assertSame($standard, $again->asBase64());
+    }
+
+    public function testDateMinutesEqualsTheEnvelopeDateField(): void
+    {
+        $minutes = 3456789;
+        $date = new DateTimeImmutable(
+            '@' . (\SwanCommunity\Owid\Io::BASE_TIMESTAMP + $minutes * 60)
+        );
+        $owid = new Owid(self::TEST_DOMAIN, $date, self::canonicalPayload());
+        $owid->signature = $this->creator->crypto()->signByteArray(
+            $owid->dataForCrypto()
+        );
+        $fod = FodId::fromOwid($owid);
+        $this->assertSame($minutes, $fod->getDateMinutes());
+        // The wire form carries the same value little-endian after the
+        // version byte and the null-terminated domain.
+        $offset = 1 + strlen(self::TEST_DOMAIN) + 1;
+        $this->assertSame(
+            $minutes,
+            unpack('V', substr($fod->asByteArray(), $offset, 4))[1]
+        );
+    }
+
+    public function testDateMinutesIsZeroAtTheBaseDate(): void
+    {
+        $date = new DateTimeImmutable('@' . \SwanCommunity\Owid\Io::BASE_TIMESTAMP);
+        $owid = new Owid(self::TEST_DOMAIN, $date, self::canonicalPayload());
+        $owid->signature = $this->creator->crypto()->signByteArray(
+            $owid->dataForCrypto()
+        );
+        $this->assertSame(0, FodId::fromOwid($owid)->getDateMinutes());
+    }
+
+    public function testContextSectionIsKeptInThePayload(): void
+    {
+        // A creator context identifier is longer than the base and the
+        // reader must keep accepting it, with the section after the value.
+        $section = "\x00" . str_repeat("\xAB", 18);
+        $payload = self::canonicalPayload() . $section;
+        $fod = FodId::fromBase64($this->signedOwidBase64($payload));
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertSame($payload, $fod->getPayload());
+        $this->assertSame($section, substr($fod->getPayload(), FodId::PAYLOAD_LENGTH));
     }
 }

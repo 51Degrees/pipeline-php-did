@@ -27,6 +27,7 @@ namespace fiftyone\pipeline\did;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\Version;
 
@@ -45,7 +46,14 @@ use SwanCommunity\Owid\Version;
  * Payload layout. The header (offsets 0-4) is shared by every identifier type;
  * bits 6-7 of Flags select the {@see IdType} and the length of the value that
  * follows (32-byte SHA-256 for Probabilistic and HashedEmail, or 16 GUID bytes
- * for Random).
+ * for Random). An identifier carrying a creator context has a further
+ * section after the value, which the reader keeps in the payload and does
+ * not interpret.
+ *
+ * The cloud issues a 51Did in standard base64 with padding, and a page puts
+ * one in a link in the URL-safe alphabet without padding, so
+ * {@see FodId::fromBase64()} accepts either form and
+ * {@see FodId::asBase64Url()} produces the URL-safe one.
  *
  * The owid-php {@see Owid} is `final`, so this type **composes** an OWID (holds
  * the wrapped envelope and delegates OWID-level concerns to it) rather than
@@ -88,6 +96,10 @@ final class FodId
      * aliased, so a FodId can never desync from its envelope if the caller
      * later mutates the OWID they passed in. The OWID must therefore be signed
      * (serializable).
+     *
+     * A payload must be at least the base length for its identifier type.
+     * Anything beyond the base is a creator context section, whose exact
+     * lengths belong to the cloud, so any longer payload is accepted here.
      *
      * @throws InvalidArgumentException when the payload is shorter than the
      *                                  minimum for its identifier type.
@@ -133,14 +145,41 @@ final class FodId
     }
 
     /**
-     * Parses a 51Did from its base64-encoded OWID string.
+     * Parses a 51Did from its base64-encoded OWID string, in either the
+     * standard alphabet (`+` and `/`, as the cloud issues it) or the URL-safe
+     * one (`-` and `_`, as a page puts it in a link), with or without
+     * padding. Surrounding whitespace is removed and the string is then
+     * normalised to the standard padded form before decoding, as the
+     * cloud's endpoints normalise the alphabet and the padding.
      *
      * @throws \SwanCommunity\Owid\OwidException when the string is not valid
      *                                           base64 or not a valid OWID.
      */
     public static function fromBase64(string $base64): self
     {
-        return new self(Owid::fromBase64($base64));
+        return new self(Owid::fromBase64(self::toStandardBase64($base64)));
+    }
+
+    /**
+     * Restores a string in either base64 alphabet to the standard alphabet
+     * with padding. Leading and trailing whitespace is removed first, since
+     * a value read from a header, a file or a form often carries a newline
+     * and the padding has to be counted from the characters that remain.
+     * Then `-` becomes `+`, `_` becomes `/`, and `==` or `=` is added when
+     * the length modulo 4 is 2 or 3. A string already in the standard
+     * padded form is returned unchanged.
+     */
+    public static function toStandardBase64(string $value): string
+    {
+        $standard = strtr(trim($value), '-_', '+/');
+        switch (strlen($standard) % 4) {
+            case 2:
+                return $standard . '==';
+            case 3:
+                return $standard . '=';
+            default:
+                return $standard;
+        }
     }
 
     /**
@@ -181,7 +220,14 @@ final class FodId
         return IdType::fromFlags($this->flags);
     }
 
-    /** The 4-byte little-endian License Id (0 to 4294967295). */
+    /**
+     * The 4-byte little-endian License Id field (0 to 4294967295).
+     *
+     * On an identifier carrying a creator context the four bytes at offset
+     * 1 hold an encrypted value that only 51Degrees can turn back into a
+     * licence identifier, so this is the field's raw value and identifies
+     * nothing outside 51Degrees.
+     */
     public function getLicenseId(): int
     {
         return $this->licenseId;
@@ -215,6 +261,20 @@ final class FodId
         return $this->owid->date;
     }
 
+    /**
+     * The envelope's own date as the unsigned 32-bit count of minutes since
+     * 2020-01-01T00:00:00Z, which is how the wire form carries it. This is
+     * the value the OWID `public-key?date=` parameter takes, and the integer
+     * to use when comparing creation times.
+     */
+    public function getDateMinutes(): int
+    {
+        return intdiv(
+            $this->owid->date->getTimestamp() - Io::BASE_TIMESTAMP,
+            60
+        );
+    }
+
     /** The OWID payload bytes. */
     public function getPayload(): string
     {
@@ -228,13 +288,26 @@ final class FodId
     }
 
     /**
-     * Returns the OWID as a base64 string.
+     * Returns the OWID as a base64 string in the standard alphabet with
+     * padding, as the cloud issues it.
      *
      * @throws \SwanCommunity\Owid\OwidException
      */
     public function asBase64(): string
     {
         return $this->owid->asBase64();
+    }
+
+    /**
+     * Returns the OWID as a base64 string in the URL-safe alphabet (`-` and
+     * `_`) without padding, so it can go in a URL without further encoding.
+     * {@see FodId::fromBase64()} reads this form back.
+     *
+     * @throws \SwanCommunity\Owid\OwidException
+     */
+    public function asBase64Url(): string
+    {
+        return rtrim(strtr($this->owid->asBase64(), '+/', '-_'), '=');
     }
 
     /**
