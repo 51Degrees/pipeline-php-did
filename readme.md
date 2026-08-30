@@ -36,15 +36,33 @@ as `Probabilistic`.
 
 ## Requirements & OWID dependency
 
-PHP **>= 8.1** (the OWID library requires it; 7.4 is end-of-life). `FodId`
-builds on the OWID envelope library
+PHP **>= 8.1**, because the OWID library requires it and 7.4 is end of life.
+`FodId` builds on the OWID envelope library
 ([SWAN-community/owid-php](https://github.com/SWAN-community/owid-php), package
-`swan-community/owid`), consumed via the `51Degrees/owid-php` fork as a git
-submodule and a Composer `path` repository. Switch to Packagist once owid-php is
-published upstream. `Owid` is `final`, so `FodId` **composes** it rather than
-subclassing.
+`swan-community/owid`), taken from the `51Degrees/owid-php` fork. `Owid` is
+`final`, so `FodId` **composes** it rather than subclassing.
 
-## Install / build
+That library is not on Packagist, so it reaches you one of two ways.
+
+- **Installing the package.** A published release carries a copy of the OWID
+  source under `third-party/swan-community/owid`, unchanged, under its own
+  Apache-2.0 licence and autoloaded under its `SwanCommunity\Owid` namespace,
+  so there is nothing extra to install and no custom repository to configure.
+- **Working in this repository.** main keeps the library as the `owid-php` git
+  submodule and consumes it through a Composer `path` repository, because the
+  library is maintained upstream and not here.
+
+[How a release is assembled](https://github.com/51Degrees/pipeline-php-did/blob/main/ci/README.md)
+covers how the published tree is built and why the two arrangements
+differ.
+
+## Install
+
+```bash
+composer require 51degrees/fiftyone.pipeline.did
+```
+
+## Build from a checkout
 
 ```bash
 git submodule update --init   # fetches owid-php into ./owid-php
