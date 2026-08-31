@@ -27,12 +27,16 @@ declare(strict_types=1);
  * Offline example for the 51Did (FodId) reader.
  *
  * The 51Degrees Cloud service issues real 51Dids. To keep this example
- * self-contained and offline, it builds a sample 51Did in process - generate
- * an ECDSA P-256 key pair, sign a canonical 37-byte payload - then parses it
- * back and prints the three payload fields. It also shows the headline use
- * case: a 51Did is re-issued fresh on every call (the envelope, hence the
- * base64, changes), but the value (the Hash) is stable. Compare values, never
- * envelopes.
+ * self-contained and offline, it builds a sample 51Did in process by
+ * generating an ECDSA P-256 key pair and signing a canonical 37-byte
+ * payload, then reads it back and prints the three payload fields. It also
+ * shows the headline use case, which is that a 51Did is re-issued fresh on
+ * every call (the envelope, hence the base64, changes) while the value (the
+ * Hash) is stable. Compare values, never envelopes.
+ *
+ * Reading answers rather than raising. A value arriving from outside may be
+ * anything at all, so tryFromBase64 reports whether it was a 51Did and, when
+ * not, the specific reason, and the example shows a few of those too.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
@@ -40,7 +44,6 @@ require __DIR__ . '/../vendor/autoload.php';
 use fiftyone\pipeline\did\FodId;
 use SwanCommunity\Owid\Creator;
 use SwanCommunity\Owid\Crypto;
-use SwanCommunity\Owid\Owid;
 
 const DOMAIN = '51degrees.com';
 
@@ -54,27 +57,36 @@ function samplePayload(): string
     return chr(0x00) . pack('V', 0x12345678) . $hash;
 }
 
-/** Issues (signs) a 51Did over the payload and returns it as base64. */
+/**
+ * Issues a 51Did over the payload and returns it as base64. The creator
+ * signs the envelope into existence, as there is no unsigned stage.
+ */
 function issue(Creator $creator, string $payload): string
 {
-    $owid = new Owid(DOMAIN, null, $payload);
-    $creator->sign($owid);
-    return $owid->asBase64();
+    return $creator->create($payload)->asBase64();
 }
 
 $crypto = Crypto::new();
 $creator = new Creator(DOMAIN, $crypto);
 $payload = samplePayload();
 
-$fodId = FodId::fromBase64(issue($creator, $payload));
+$result = FodId::tryFromBase64(issue($creator, $payload));
+if (!$result->ok) {
+    throw new RuntimeException(
+        'The sample 51Did did not read: ' . $result->status->value
+    );
+}
+$fodId = $result->fodId;
 
-echo "51Did parsed from base64:\n";
+echo "51Did read from base64 (status " . $result->status->value . "):\n";
 echo '  Domain    : ' . $fodId->getDomain() . "\n";
 echo '  Type      : ' . $fodId->getType()->name . "\n";
 echo '  Flags     : 0x' . dechex($fodId->getFlags()) . "\n";
 echo '  LicenseId : ' . $fodId->getLicenseId() . "\n";
 echo '  Hash      : ' . bin2hex($fodId->getHash()) . "\n";
+// Reading never verifies, so the signature is a separate question.
 echo '  Verifies  : ' . ($fodId->verify($crypto->publicKeyPem()) ? 'true' : 'false') . "\n";
+echo '  Signature : ' . $fodId->signatureStatus($crypto->publicKeyPem())->value . "\n";
 
 $reissued = FodId::fromBase64(issue($creator, $payload));
 $sameEnvelope = $fodId->asBase64() === $reissued->asBase64();
@@ -88,4 +100,26 @@ if ($sameEnvelope || !$sameValue) {
     throw new RuntimeException(
         'Expected a different envelope but the same value across reissues.'
     );
+}
+
+// Values that are not a 51Did are an ordinary outcome with a named reason.
+echo "\nValues that are not a 51Did:\n";
+$examples = [
+    'not base64 at all'      => 'not a 51Did!',
+    'nothing'                => '',
+    'a payload of two bytes' => issue($creator, "\x00\x01"),
+    'a Random tag, no GUID'  => issue($creator, chr(1 << 6) . pack('V', 1)),
+];
+foreach ($examples as $label => $value) {
+    $read = FodId::tryFromBase64($value);
+    printf(
+        "  %-22s : ok=%s value=%s status=%s\n",
+        $label,
+        $read->ok ? 'true' : 'false',
+        $read->fodId === null ? 'none' : 'present',
+        $read->status->value
+    );
+    if ($read->ok) {
+        throw new RuntimeException("Expected {$label} not to read.");
+    }
 }

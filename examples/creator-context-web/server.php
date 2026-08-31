@@ -147,16 +147,19 @@ if ($path === '/examples-main.min.css') {
 if ($path === '/redeem') {
     // The server-side step, and the lines a developer copies into their
     // own server. The 51Did arrives from the page in the URL-safe
-    // alphabet, which fromBase64 accepts. The licence key is added by the
-    // client here and only here, so the browser never sees it.
-    try {
-        $fodId = FodId::fromBase64($_GET['51did'] ?? '');
-    } catch (Throwable $error) {
+    // alphabet, which tryFromBase64 accepts, and whatever else arrives
+    // under that name (nothing, or an array from a repeated parameter) is
+    // answered with the reason rather than raised. The licence key is
+    // added by the client here and only here, so the browser never sees
+    // it.
+    $read = FodId::tryFromBase64($_GET['51did'] ?? null);
+    if (!$read->ok) {
         answerJson(400, ['errors' => [
-            'The 51did is not a valid 51Did: ' . $error->getMessage(),
+            'The 51did is not a valid 51Did (' . $read->status->value . ').',
         ]]);
         return;
     }
+    $fodId = $read->fodId;
     try {
         // The offline check against the published keys, which needs no
         // sealed result. A production server could refuse here before
