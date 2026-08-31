@@ -100,14 +100,14 @@ class DidClientTest extends TestCase
         return $at->setTimestamp($at->getTimestamp() + $seconds);
     }
 
-    /** A canonical Probabilistic payload, header plus a 32 byte value. */
+    /** A canonical Probabilistic payload, header plus a 32 byte match key. */
     private static function payload(): string
     {
-        $hash = '';
+        $matchKey = '';
         for ($i = 0; $i < FodId::HASH_LENGTH; $i++) {
-            $hash .= chr(0x20 + $i);
+            $matchKey .= chr(0x20 + $i);
         }
-        return chr(0x05) . pack('V', 0x12345678) . $hash;
+        return chr(0x05) . pack('V', 0x12345678) . $matchKey;
     }
 
     /**
