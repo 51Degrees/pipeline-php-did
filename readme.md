@@ -198,14 +198,14 @@ gone from the library, and the package now reads like this.
 try {
     $fodId = FodId::fromOwid(Owid::fromBase64($value));
 } catch (OwidException $e) {
-    log('not a 51Did: ' . $e->getMessage());
+    error_log('not a 51Did: ' . $e->getMessage());
 }
 
 // After. The read answers with a named reason and nothing is raised for
 // data that merely fails to be a 51Did.
 $result = FodId::tryFromBase64($value);
 if (!$result->ok) {
-    log('not a 51Did: ' . $result->status->value);
+    error_log('not a 51Did: ' . $result->status->value);
     return;
 }
 $fodId = $result->fodId;
