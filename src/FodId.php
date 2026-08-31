@@ -29,6 +29,9 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
+use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseResult;
+use SwanCommunity\Owid\SignatureStatus;
 use SwanCommunity\Owid\Version;
 
 /**
@@ -43,24 +46,38 @@ use SwanCommunity\Owid\Version;
  * inputs share the same value even though their envelopes differ. *Compare
  * values, never envelopes.*
  *
- * Payload layout. The header (offsets 0-4) is shared by every identifier type;
- * bits 6-7 of Flags select the {@see IdType} and the length of the value that
- * follows (32-byte SHA-256 for Probabilistic and HashedEmail, or 16 GUID bytes
- * for Random). An identifier carrying a creator context has a further
- * section after the value, which the reader keeps in the payload and does
- * not interpret.
+ * Payload layout. The header (offsets 0-4) is shared by every identifier
+ * type, and bits 6-7 of Flags select the {@see IdType} and the length of the
+ * value that follows (32-byte SHA-256 for Probabilistic and HashedEmail, or
+ * 16 GUID bytes for Random). An identifier carrying a creator context has a
+ * further section after the value, which the reader keeps in the payload and
+ * does not interpret. There is no upper bound on the payload here, because
+ * the lengths of that section belong to the cloud and an older reader has to
+ * keep accepting an identifier from a newer one.
+ *
+ * Reading is two steps. The OWID library reads the envelope and this class
+ * then reads the payload inside it. The `try` factories,
+ * {@see FodId::tryFromBase64()}, {@see FodId::tryFromByteArray()} and
+ * {@see FodId::tryFromOwid()}, answer with a {@see FodIdParseResult} rather
+ * than raising, because the value arrives from outside and failing to be a
+ * 51Did is an ordinary outcome, and whoever sends the value chooses how often
+ * that happens. The older factories, {@see FodId::fromBase64()},
+ * {@see FodId::fromByteArray()}, {@see FodId::fromOwid()} and the
+ * constructor, raise for the same inputs and are kept for callers written
+ * against them. Both run the same checks.
  *
  * The cloud issues a 51Did in standard base64 with padding, and a page puts
- * one in a link in the URL-safe alphabet without padding, so
- * {@see FodId::fromBase64()} accepts either form and
- * {@see FodId::asBase64Url()} produces the URL-safe one.
+ * one in a link in the URL-safe alphabet without padding, so the base64
+ * factories accept either form and {@see FodId::asBase64Url()} produces the
+ * URL-safe one.
  *
- * The owid-php {@see Owid} is `final`, so this type **composes** an OWID (holds
- * the wrapped envelope and delegates OWID-level concerns to it) rather than
- * inheriting from it. The wrapped OWID is **copied** on construction (an Owid
- * is mutable), so a FodId is fully decoupled from the caller's instance and
- * can never desync from its envelope. Constructing a {@see FodId} does **not**
- * verify the signature; call {@see FodId::verify()} explicitly.
+ * The owid-php {@see Owid} is `final`, so this type **composes** an OWID
+ * (holds the envelope and delegates OWID-level concerns to it) rather than
+ * inheriting from it. An OWID only exists once it has been read or signed
+ * and its fields are read only, so the one handed in is held as it is.
+ * Reading a {@see FodId} does **not** verify the signature, and a parsed
+ * 51Did is not necessarily genuine. Call {@see FodId::verify()} or
+ * {@see FodId::signatureStatus()} explicitly.
  */
 final class FodId
 {
@@ -89,75 +106,104 @@ final class FodId
     private string $hash;
 
     /**
-     * Promotes an already-parsed {@see Owid} into a 51Did by unpacking its
+     * Promotes an already-read {@see Owid} into a 51Did by unpacking its
      * payload.
-     *
-     * The OWID is **copied** (round-tripped through its byte form), not
-     * aliased, so a FodId can never desync from its envelope if the caller
-     * later mutates the OWID they passed in. The OWID must therefore be signed
-     * (serializable).
      *
      * A payload must be at least the base length for its identifier type.
      * Anything beyond the base is a creator context section, whose exact
      * lengths belong to the cloud, so any longer payload is accepted here.
+     * {@see FodId::tryFromOwid()} answers with a status where this raises.
      *
      * @throws InvalidArgumentException when the payload is shorter than the
-     *                                  minimum for its identifier type.
-     * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
-     *                                           serialized (e.g. it is unsigned)
+     *                                  header, or than the minimum for its
+     *                                  identifier type.
      */
     public function __construct(Owid $owid)
     {
-        $this->owid = Owid::fromByteArray($owid->asByteArray());
-        $payload = $this->owid->payload;
-        $length = strlen($payload);
-        if ($length < self::HEADER_LENGTH) {
-            throw new InvalidArgumentException(sprintf(
-                '51Did payload must be at least %d bytes; got %d.',
-                self::HEADER_LENGTH,
-                $length
-            ));
+        $read = self::readPayload($owid->payload);
+        if ($read instanceof FodIdParseStatus) {
+            throw new InvalidArgumentException(
+                self::describe($read, $owid->payload)
+            );
         }
-        $this->flags = ord($payload[self::FLAGS_OFFSET]);
-        // Little-endian unsigned 32-bit. 'V' yields a non-negative int on
-        // 64-bit PHP (max 4294967295 < PHP_INT_MAX), so the high bit never
-        // becomes negative.
-        $this->licenseId = unpack(
-            'V',
-            substr($payload, self::LICENSE_ID_OFFSET, self::LICENSE_ID_LENGTH)
-        )[1];
-        $type = IdType::fromFlags($this->flags);
-        $valueLength = match ($type) {
-            IdType::Random => self::GUID_LENGTH,
-            IdType::Reserved => $length - self::HEADER_LENGTH,
-            default => self::HASH_LENGTH,
-        };
-        if ($length < self::HEADER_LENGTH + $valueLength) {
-            throw new InvalidArgumentException(sprintf(
-                '51Did payload for the %s type must be at least %d bytes; '
-                . 'got %d.',
-                $type->name,
-                self::HEADER_LENGTH + $valueLength,
-                $length
-            ));
-        }
-        $this->hash = substr($payload, self::HASH_OFFSET, $valueLength);
+        $this->owid = $owid;
+        [$this->flags, $this->licenseId, $this->hash] = $read;
     }
 
     /**
-     * Parses a 51Did from its base64-encoded OWID string, in either the
-     * standard alphabet (`+` and `/`, as the cloud issues it) or the URL-safe
-     * one (`-` and `_`, as a page puts it in a link), with or without
-     * padding. Surrounding whitespace is removed and the string is then
-     * normalised to the standard padded form before decoding, as the
-     * cloud's endpoints normalise the alphabet and the padding.
+     * Reads a 51Did from its base64-encoded OWID string, answering rather
+     * than raising when the value is not one.
      *
-     * @throws \SwanCommunity\Owid\OwidException when the string is not valid
-     *                                           base64 or not a valid OWID.
+     * The value may be anything at all, because it is external data, so a
+     * null, an empty string or a value of another type (for example the
+     * array PHP builds when a query string repeats a parameter with
+     * brackets) is reported by status rather than raised. A string in
+     * either alphabet is accepted, standard (`+` and `/`, as the cloud
+     * issues it) or URL-safe (`-` and `_`, as a page puts it in a link),
+     * with or without padding, and surrounding whitespace is removed, as
+     * the cloud's endpoints normalise the alphabet and the padding.
+     *
+     * The result carries the OWID library's own status when the envelope
+     * could not be read, and {@see FodIdParseStatus::PayloadTooShort} or
+     * {@see FodIdParseStatus::InvalidTypePayloadLength} when the envelope
+     * was sound and the payload does not fit a 51Did. Success says nothing
+     * about the signature.
+     *
+     * @param mixed $value the base64 text, or anything a caller was handed
+     */
+    public static function tryFromBase64(mixed $value): FodIdParseResult
+    {
+        if (is_string($value)) {
+            $value = self::toStandardBase64($value);
+        }
+        return self::fromEnvelope(Owid::tryFromBase64($value));
+    }
+
+    /**
+     * Reads a 51Did from the raw bytes of an OWID envelope, answering
+     * rather than raising when the bytes are not one. The buffer must be
+     * one whole envelope and nothing else. The statuses are those of
+     * {@see FodId::tryFromBase64()} less the base64 one.
+     *
+     * @param mixed $buffer the raw bytes, or anything a caller was handed
+     */
+    public static function tryFromByteArray(mixed $buffer): FodIdParseResult
+    {
+        return self::fromEnvelope(Owid::tryFromByteArray($buffer));
+    }
+
+    /**
+     * Reads a 51Did from an already-read {@see Owid}, answering
+     * {@see FodIdParseStatus::PayloadTooShort} or
+     * {@see FodIdParseStatus::InvalidTypePayloadLength} rather than raising
+     * when the payload does not fit.
+     */
+    public static function tryFromOwid(Owid $owid): FodIdParseResult
+    {
+        $read = self::readPayload($owid->payload);
+        if ($read instanceof FodIdParseStatus) {
+            return FodIdParseResult::failed($read);
+        }
+        return FodIdParseResult::parsed(new self($owid));
+    }
+
+    /**
+     * Parses a 51Did from its base64-encoded OWID string, in either
+     * alphabet, with or without padding, and raises when the value is not
+     * one. {@see FodId::tryFromBase64()} answers with a status for the same
+     * inputs and is the surface to use for values arriving from outside.
+     *
+     * @throws OwidException when the string is not valid base64 or not a
+     *                       valid OWID, with the message naming the OWID
+     *                       library's status.
+     * @throws InvalidArgumentException when the envelope is sound and the
+     *                                  payload does not fit a 51Did.
      */
     public static function fromBase64(string $base64): self
     {
-        return new self(Owid::fromBase64(self::toStandardBase64($base64)));
+        return new self(self::envelopeOrThrow(
+            Owid::tryFromBase64(self::toStandardBase64($base64))
+        ));
     }
 
     /**
@@ -183,29 +229,145 @@ final class FodId
     }
 
     /**
-     * Parses a 51Did from the raw bytes of an OWID envelope.
+     * Parses a 51Did from the raw bytes of an OWID envelope and raises when
+     * the bytes are not one. {@see FodId::tryFromByteArray()} answers with a
+     * status for the same inputs.
      *
-     * @throws \SwanCommunity\Owid\OwidException when the bytes are not a valid
-     *                                           OWID.
+     * @throws OwidException when the bytes are not a valid OWID, with the
+     *                       message naming the OWID library's status.
+     * @throws InvalidArgumentException when the envelope is sound and the
+     *                                  payload does not fit a 51Did.
      */
     public static function fromByteArray(string $buffer): self
     {
-        return new self(Owid::fromByteArray($buffer));
+        return new self(self::envelopeOrThrow(Owid::tryFromByteArray($buffer)));
     }
 
     /**
-     * Promotes an already-parsed OWID into a 51Did. The constructor **copies**
-     * the OWID (round-tripped through its byte form), not aliases it, so a
-     * FodId can never desync from its envelope if the caller later mutates the
-     * OWID it passed in. The supplied OWID must therefore be signed
-     * (serializable).
+     * Promotes an already-read OWID into a 51Did, raising when its payload
+     * does not fit. The same as the constructor, kept as the named form.
      *
-     * @throws \SwanCommunity\Owid\OwidException if the OWID cannot be
-     *                                           serialized (e.g. it is unsigned)
+     * @throws InvalidArgumentException when the payload is shorter than the
+     *                                  header, or than the minimum for its
+     *                                  identifier type.
      */
     public static function fromOwid(Owid $owid): self
     {
         return new self($owid);
+    }
+
+    /**
+     * Continues a read from the OWID library's answer. A failed envelope
+     * read is passed on with the library's status exactly as reported, so
+     * nothing about it is mapped down or renamed, and only a sound envelope
+     * goes on to the payload checks.
+     */
+    private static function fromEnvelope(ParseResult $result): FodIdParseResult
+    {
+        if (!$result->ok) {
+            return FodIdParseResult::failed($result->status);
+        }
+        return self::tryFromOwid($result->owid);
+    }
+
+    /**
+     * The OWID from the library's answer, or the exception the throwing
+     * factories have always documented. The library itself no longer raises
+     * on reading, so the exception is made here, carrying the library's
+     * status name, to keep the catch blocks of existing callers working.
+     *
+     * @throws OwidException when the envelope could not be read.
+     */
+    private static function envelopeOrThrow(ParseResult $result): Owid
+    {
+        if (!$result->ok) {
+            throw new OwidException(
+                'The value is not a valid OWID envelope ('
+                . $result->status->value . ').'
+            );
+        }
+        return $result->owid;
+    }
+
+    /**
+     * Reads the header and the value from a payload, or names why the
+     * payload does not fit a 51Did. This is the one place the payload rules
+     * live, so the raising and the answering surfaces cannot drift apart.
+     *
+     * The header must be present before the type can be read, and the type
+     * then says how many value bytes must follow. A Reserved identifier
+     * takes whatever follows the header, which is the existing best-effort
+     * reading of a type not yet assigned. Anything after the value is a
+     * creator context section and is left in the payload unread.
+     *
+     * @return array{int, int, string}|FodIdParseStatus the flags, the licence
+     *     id and the value bytes, or the reason the payload does not fit
+     */
+    private static function readPayload(string $payload): array|FodIdParseStatus
+    {
+        $length = strlen($payload);
+        if ($length < self::HEADER_LENGTH) {
+            return FodIdParseStatus::PayloadTooShort;
+        }
+        $flags = ord($payload[self::FLAGS_OFFSET]);
+        $valueLength = self::valueLength(IdType::fromFlags($flags), $length);
+        if ($length < self::HEADER_LENGTH + $valueLength) {
+            return FodIdParseStatus::InvalidTypePayloadLength;
+        }
+        // Little-endian unsigned 32-bit. 'V' yields a non-negative int on
+        // 64-bit PHP (max 4294967295 < PHP_INT_MAX), so the high bit never
+        // becomes negative.
+        $licenseId = unpack(
+            'V',
+            substr($payload, self::LICENSE_ID_OFFSET, self::LICENSE_ID_LENGTH)
+        )[1];
+        return [
+            $flags,
+            $licenseId,
+            substr($payload, self::HASH_OFFSET, $valueLength),
+        ];
+    }
+
+    /**
+     * The number of value bytes the type requires after the header, given
+     * the payload length for the Reserved case, which takes the remainder.
+     */
+    private static function valueLength(IdType $type, int $payloadLength): int
+    {
+        return match ($type) {
+            IdType::Random => self::GUID_LENGTH,
+            IdType::Reserved => $payloadLength - self::HEADER_LENGTH,
+            default => self::HASH_LENGTH,
+        };
+    }
+
+    /**
+     * The message for the exception the raising surfaces carry when a
+     * payload does not fit, naming the status and the byte counts.
+     */
+    private static function describe(
+        FodIdParseStatus $status,
+        string $payload
+    ): string {
+        $length = strlen($payload);
+        if ($status === FodIdParseStatus::PayloadTooShort) {
+            return sprintf(
+                '51Did payload must be at least %d bytes and %d were given '
+                . '(%s).',
+                self::HEADER_LENGTH,
+                $length,
+                $status->value
+            );
+        }
+        $type = IdType::fromFlags(ord($payload[self::FLAGS_OFFSET]));
+        return sprintf(
+            '51Did payload for the %s type must be at least %d bytes and %d '
+            . 'were given (%s).',
+            $type->name,
+            self::HEADER_LENGTH + self::valueLength($type, $length),
+            $length,
+            $status->value
+        );
     }
 
     /** The 1-byte usage flags bit-mask from the payload (0-255). */
@@ -235,8 +397,8 @@ final class FodId
 
     /**
      * The value bytes (a 32-byte SHA-256, or 16 GUID bytes for Random) as a
-     * binary string. This is the stable, comparable part of the envelope - use
-     * it as the cache / dedup key.
+     * binary string. This is the stable, comparable part of the envelope, so
+     * use it as the cache and dedup key.
      */
     public function getHash(): string
     {
@@ -291,7 +453,7 @@ final class FodId
      * Returns the OWID as a base64 string in the standard alphabet with
      * padding, as the cloud issues it.
      *
-     * @throws \SwanCommunity\Owid\OwidException
+     * @throws OwidException
      */
     public function asBase64(): string
     {
@@ -301,9 +463,10 @@ final class FodId
     /**
      * Returns the OWID as a base64 string in the URL-safe alphabet (`-` and
      * `_`) without padding, so it can go in a URL without further encoding.
-     * {@see FodId::fromBase64()} reads this form back.
+     * {@see FodId::fromBase64()} and {@see FodId::tryFromBase64()} read this
+     * form back.
      *
-     * @throws \SwanCommunity\Owid\OwidException
+     * @throws OwidException
      */
     public function asBase64Url(): string
     {
@@ -313,7 +476,7 @@ final class FodId
     /**
      * Returns the OWID as a byte array including the signature.
      *
-     * @throws \SwanCommunity\Owid\OwidException
+     * @throws OwidException
      */
     public function asByteArray(): string
     {
@@ -321,13 +484,29 @@ final class FodId
     }
 
     /**
-     * Verifies the OWID signature against the supplied public key. This is an
-     * explicit, separate step - construction never verifies.
+     * Verifies the OWID signature against the supplied public key. This is
+     * an explicit, separate step, as reading never verifies. False means
+     * the signature does not match this key, and a key that cannot be read
+     * is raised rather than reported as a mismatch. Where the difference
+     * between the two changes what the caller does, use
+     * {@see FodId::signatureStatus()}.
      *
-     * @throws \SwanCommunity\Owid\OwidException
+     * @throws OwidException when the PEM is not a valid public key.
      */
     public function verify(string $publicPem): bool
     {
         return $this->owid->verifyWithPublicKey($publicPem, []);
+    }
+
+    /**
+     * Says whether the signature is genuine for the public key given, and
+     * where the question could not be answered, says that instead of
+     * reporting a forgery. {@see SignatureStatus::SignatureInvalid} is the
+     * only answer that means the identifier should be distrusted, and a key
+     * that cannot be read is {@see SignatureStatus::InvalidKey}.
+     */
+    public function signatureStatus(string $publicPem): SignatureStatus
+    {
+        return $this->owid->signatureStatus($publicPem, []);
     }
 }

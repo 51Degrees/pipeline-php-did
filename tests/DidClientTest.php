@@ -32,6 +32,7 @@ use fiftyone\pipeline\did\ContextOutcome;
 use fiftyone\pipeline\did\DidClient;
 use fiftyone\pipeline\did\FactorOutcome;
 use fiftyone\pipeline\did\FodId;
+use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\NotSupportedException;
 use fiftyone\pipeline\did\SignatureOutcome;
 use InvalidArgumentException;
@@ -39,7 +40,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use RuntimeException;
 use SwanCommunity\Owid\Crypto;
-use SwanCommunity\Owid\Owid;
+use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\Version;
 
 /**
@@ -120,10 +121,22 @@ class DidClientTest extends TestCase
         Version $version = Version::Version3,
         string $domain = self::DOMAIN
     ): FodId {
-        $owid = new Owid($domain, $date, $payload ?? self::payload());
-        $owid->version = $version;
-        $owid->signature = $crypto->signByteArray($owid->dataForCrypto());
-        return FodId::fromOwid($owid);
+        return FodId::fromOwid(Envelopes::owid(
+            $crypto,
+            $domain,
+            $date,
+            $payload ?? self::payload(),
+            $version
+        ));
+    }
+
+    /**
+     * A well formed identifier in the URL-safe form a page sends, for the
+     * tests whose subject is what the cloud answers rather than the value.
+     */
+    private function someId(): string
+    {
+        return $this->signedAt(self::at(self::T0), $this->keyA)->asBase64Url();
     }
 
     /**
@@ -614,6 +627,45 @@ class DidClientTest extends TestCase
         $this->assertTrue($this->client()->verifySignature($fodId));
     }
 
+    public function testVerifySignatureFalseForATamperedSignature(): void
+    {
+        // Structurally sound and cryptographically wrong. The value reads
+        // as a 51Did and the offline check then says it does not verify.
+        $this->queueJson(200, $this->schedule());
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $raw = $this->signedAt($inside, $this->keyB)->asByteArray();
+        $raw[strlen($raw) - 1] = $raw[strlen($raw) - 1] ^ "\xFF";
+        $read = FodId::tryFromByteArray($raw);
+        $this->assertTrue($read->ok);
+        $this->assertSame(ParseStatus::Parsed, $read->status);
+        $this->assertFalse($this->client()->verifySignature($read->fodId));
+    }
+
+    public function testKeyEndpointFailureIsRaisedAndNeverAnInvalidSignature(): void
+    {
+        // A key that cannot be obtained leaves the signature unjudged, so
+        // the answer is the failure itself and not false.
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $fodId = $this->signedAt($inside, $this->keyB);
+        $this->queue(500, 'key service down');
+        try {
+            $this->client()->verifySignature($fodId);
+            $this->fail('Expected a CloudException.');
+        } catch (CloudException $exception) {
+            $this->assertSame(500, $exception->getStatusCode());
+        }
+        $unreachable = new DidClient(
+            self::RESOURCE,
+            null,
+            self::ENDPOINT,
+            function (): array {
+                throw new RuntimeException('No response from the cloud.');
+            }
+        );
+        $this->expectException(RuntimeException::class);
+        $unreachable->verifySignature($fodId);
+    }
+
     public function testVerifySignatureTrueForRandomIdentifier(): void
     {
         $this->queueJson(200, $this->schedule());
@@ -648,19 +700,110 @@ class DidClientTest extends TestCase
     public function testVerifyInvalid(): void
     {
         $this->queueJson(400, ['valid' => false]);
-        $this->assertFalse($this->client()->verify('AzUxZC5jb20A'));
+        $this->assertFalse($this->client()->verify($this->someId()));
     }
 
     public function testVerifyErrorsThrowsWithTheCloudMessage(): void
     {
+        // A value that reads as a 51Did here can still be refused by the
+        // cloud, and then the cloud's own message is what the caller sees.
         $this->queueJson(400, ['errors' => [self::NOT_A_51DID]]);
         try {
-            $this->client()->verify('not a 51did');
+            $this->client()->verify($this->someId());
             $this->fail('Expected an InvalidArgumentException.');
         } catch (InvalidArgumentException $exception) {
             $this->assertStringContainsString(
                 self::NOT_A_51DID,
                 $exception->getMessage()
+            );
+        }
+        $this->assertCount(1, $this->requests);
+    }
+
+    /**
+     * Values that are not a 51Did, each with the status the read reports,
+     * so a test can show the reason reached the caller unchanged.
+     *
+     * @return array<int, array{string, ParseStatus|FodIdParseStatus}>
+     */
+    private function malformedValues(): array
+    {
+        // A sound envelope whose payload is one byte short for its type,
+        // written as bytes because no FodId can exist for it.
+        $short = Envelopes::bytes(
+            $this->keyA,
+            self::DOMAIN,
+            self::at(self::T0),
+            substr(self::payload(), 0, FodId::PAYLOAD_LENGTH - 1)
+        );
+        $good = $this->signedAt(self::at(self::T0), $this->keyA)->asByteArray();
+        return [
+            ['not a 51did', ParseStatus::InvalidBase64],
+            ['AzUxZC5jb20A', ParseStatus::UnexpectedEnd],
+            ['', ParseStatus::MissingInput],
+            [base64_encode("\x00"), ParseStatus::AbsentNode],
+            [base64_encode($good . "\x00"), ParseStatus::ByteCountMismatch],
+            [base64_encode($short), FodIdParseStatus::InvalidTypePayloadLength],
+        ];
+    }
+
+    public function testVerifyRefusesAMalformedValueBeforeAnyRequest(): void
+    {
+        foreach ($this->malformedValues() as [$value, $status]) {
+            // A key list is queued so that a fetch, were one attempted,
+            // would succeed and be counted rather than fail for want of an
+            // answer.
+            $this->requests = [];
+            $this->queueJson(200, $this->schedule());
+            try {
+                $this->client()->verify($value);
+                $this->fail('Expected a malformed value to be refused.');
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    $status->value,
+                    $exception->getMessage()
+                );
+                $this->assertStringNotContainsString(
+                    'far longer',
+                    $exception->getMessage()
+                );
+            }
+            // Neither a key fetch nor the verify call reached the transport.
+            $this->assertCount(0, $this->requests);
+        }
+    }
+
+    public function testRedeemRefusesAMalformedValueBeforeAnyRequest(): void
+    {
+        foreach ($this->malformedValues() as [$value, $status]) {
+            $this->requests = [];
+            $this->queueJson(200, $this->schedule());
+            try {
+                $this->client()->redeem($value, 'SEALED', 'C');
+                $this->fail('Expected a malformed value to be refused.');
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    $status->value,
+                    $exception->getMessage()
+                );
+            }
+            $this->assertCount(0, $this->requests);
+        }
+    }
+
+    public function testAWellFormedStringIsSentAsGiven(): void
+    {
+        // The read is a check and not a rewrite. The cloud receives the
+        // value in whichever alphabet the caller was handed.
+        $fodId = $this->signedAt(self::at(self::T0), $this->keyA);
+        foreach ([$fodId->asBase64(), $fodId->asBase64Url()] as $given) {
+            $this->queueJson(200, ['valid' => true]);
+            $this->assertTrue($this->client()->verify($given));
+            $this->assertSame(
+                self::ENDPOINT . 'id/verify/' . self::RESOURCE
+                    . '?51did=' . rawurlencode($given)
+                    . '&owid=' . rawurlencode($given),
+                $this->lastRequest()['url']
             );
         }
     }
@@ -689,14 +832,23 @@ class DidClientTest extends TestCase
 
     public function testVerifyRefusesAnAbsurdlyLongValueBeforeTransport(): void
     {
-        try {
-            $this->client()->verify(str_repeat('A', 8192));
-            $this->fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException $exception) {
-            $this->assertStringContainsString(
-                'far longer',
-                $exception->getMessage()
-            );
+        // The guard is client policy and fires before the value is read, so
+        // the message names the length and not a parse status, even for a
+        // value that would also fail to read.
+        foreach ([str_repeat('A', 8192), str_repeat('!', 8192)] as $value) {
+            try {
+                $this->client()->verify($value);
+                $this->fail('Expected an InvalidArgumentException.');
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    'far longer',
+                    $exception->getMessage()
+                );
+                $this->assertStringNotContainsString(
+                    'not a 51Did',
+                    $exception->getMessage()
+                );
+            }
         }
         // Neither a key fetch nor the verify call reached the transport.
         $this->assertCount(0, $this->requests);
@@ -706,7 +858,7 @@ class DidClientTest extends TestCase
     {
         $this->queue(500, 'boom');
         $this->expectException(CloudException::class);
-        $this->client()->verify('AzUxZC5jb20A');
+        $this->client()->verify($this->someId());
     }
 
     // ----- Redeem -----
@@ -746,7 +898,7 @@ class DidClientTest extends TestCase
     public function testRedeemOmitsLicenceWhenNoneGiven(): void
     {
         $this->queueJson(200, ['context' => 'unreadable']);
-        $this->client(null)->redeem('AzUxZC5jb20A', 'SEALED', '');
+        $this->client(null)->redeem($this->someId(), 'SEALED', '');
         parse_str($this->lastRequest()['body'], $form);
         $this->assertArrayNotHasKey('license', $form);
         $this->assertSame(
@@ -766,7 +918,7 @@ class DidClientTest extends TestCase
             'verifiedAt' => '2026-08-07T09:15:32Z',
             'secondsSinceVerified' => 2,
         ]);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Mismatch, $result->context);
         $this->assertSame(SignatureOutcome::Verified, $result->signature);
         $this->assertSame(FactorOutcome::Verified, $result->factors['transport']);
@@ -791,7 +943,7 @@ class DidClientTest extends TestCase
         $body = ['signature' => 'invalid', 'context' => 'verified',
             'verifiedAt' => '2026-08-07T09:15:32Z', 'secondsSinceVerified' => 0];
         $this->queueJson(200, $body);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Verified, $result->context);
         $this->assertSame(SignatureOutcome::Invalid, $result->signature);
         $this->assertNull($result->factors);
@@ -804,7 +956,7 @@ class DidClientTest extends TestCase
     {
         $this->queueJson(200, ['context' => 'expired',
             'verifiedAt' => '2026-08-07T09:15:32Z', 'secondsSinceVerified' => 14]);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Expired, $result->context);
         $this->assertSame(SignatureOutcome::Unknown, $result->signature);
         $this->assertSame(14, $result->secondsSinceVerified);
@@ -815,7 +967,7 @@ class DidClientTest extends TestCase
     public function testRedeemReplayed(): void
     {
         $this->queueJson(200, ['context' => 'replayed']);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Replayed, $result->context);
         $this->assertNull($result->verifiedAt);
         $this->assertNull($result->secondsSinceVerified);
@@ -825,7 +977,7 @@ class DidClientTest extends TestCase
     public function testRedeemUnreadable(): void
     {
         $this->queueJson(200, ['context' => 'unreadable']);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'not-base64url!!', 'C');
+        $result = $this->client()->redeem($this->someId(), 'not-base64url!!', 'C');
         $this->assertSame(ContextOutcome::Unreadable, $result->context);
         $this->assertSame(200, $result->statusCode);
     }
@@ -833,7 +985,7 @@ class DidClientTest extends TestCase
     public function testRedeemUnconfirmedIs503(): void
     {
         $this->queueJson(503, ['context' => 'unconfirmed']);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Unconfirmed, $result->context);
         $this->assertSame(503, $result->statusCode);
     }
@@ -841,7 +993,7 @@ class DidClientTest extends TestCase
     public function testRedeemUnknownContextFailsClosedAndKeepsTheRaw(): void
     {
         $this->queueJson(200, ['context' => 'somethingnew']);
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Unreadable, $result->context);
         $this->assertSame('somethingnew', $result->rawContext);
     }
@@ -849,7 +1001,7 @@ class DidClientTest extends TestCase
     public function testRedeemNonJsonBodyFailsClosed(): void
     {
         $this->queue(200, '<html>proxy</html>');
-        $result = $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
         $this->assertSame(ContextOutcome::Unreadable, $result->context);
         $this->assertSame('', $result->rawContext);
         $this->assertSame('<html>proxy</html>', $result->raw);
@@ -859,7 +1011,7 @@ class DidClientTest extends TestCase
     {
         $this->queueJson(400, ['errors' => [self::NOT_A_51DID]]);
         try {
-            $this->client()->redeem('garbage', 'SEALED', 'C');
+            $this->client()->redeem($this->someId(), 'SEALED', 'C');
             $this->fail('Expected an InvalidArgumentException.');
         } catch (InvalidArgumentException $exception) {
             $this->assertStringContainsString(
@@ -888,7 +1040,7 @@ class DidClientTest extends TestCase
     {
         $this->queue(404, '');
         try {
-            $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+            $this->client()->redeem($this->someId(), 'SEALED', 'C');
             $this->fail('Expected a NotSupportedException.');
         } catch (NotSupportedException $exception) {
             $this->assertSame(404, $exception->getStatusCode());
@@ -900,7 +1052,7 @@ class DidClientTest extends TestCase
     {
         $this->queue(500, 'server error');
         try {
-            $this->client()->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+            $this->client()->redeem($this->someId(), 'SEALED', 'C');
             $this->fail('Expected a CloudException.');
         } catch (CloudException $exception) {
             $this->assertNotInstanceOf(
@@ -923,6 +1075,6 @@ class DidClientTest extends TestCase
             }
         );
         $this->expectException(RuntimeException::class);
-        $client->redeem('AzUxZC5jb20A', 'SEALED', 'C');
+        $client->redeem($this->someId(), 'SEALED', 'C');
     }
 }

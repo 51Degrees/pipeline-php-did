@@ -27,13 +27,18 @@ namespace fiftyone\pipeline\did\tests;
 
 use DateTimeImmutable;
 use fiftyone\pipeline\did\FodId;
+use fiftyone\pipeline\did\FodIdParseResult;
+use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\IdType;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Creator;
 use SwanCommunity\Owid\Crypto;
+use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseStatus;
+use SwanCommunity\Owid\SignatureStatus;
 use TypeError;
 
 class FodIdTest extends TestCase
@@ -43,15 +48,18 @@ class FodIdTest extends TestCase
     private const CANONICAL_FLAGS = 0xA5;
     private const CANONICAL_LICENSE_ID = 0x12345678;
 
+    private Crypto $crypto;
     private Creator $creator;
     private string $publicPem;
 
     protected function setUp(): void
     {
-        $crypto = Crypto::new();
-        $this->publicPem = $crypto->publicKeyPem();
-        $this->creator = new Creator(self::TEST_DOMAIN, $crypto);
+        $this->crypto = Crypto::new();
+        $this->publicPem = $this->crypto->publicKeyPem();
+        $this->creator = new Creator(self::TEST_DOMAIN, $this->crypto);
     }
+
+    // ----- Helpers -----
 
     private static function canonicalHash(): string
     {
@@ -69,27 +77,74 @@ class FodIdTest extends TestCase
             . self::canonicalHash();
     }
 
-    private static function canonicalRandomPayload(): string
+    private static function canonicalGuid(): string
     {
         $guid = '';
         for ($i = 0; $i < FodId::GUID_LENGTH; $i++) {
             $guid .= chr(0x40 + $i);
         }
-        return chr((1 << 6) | 0b001)            // Random tag + usage bits
-            . pack('V', self::CANONICAL_LICENSE_ID)
-            . $guid;
+        return $guid;
     }
 
+    private static function canonicalRandomPayload(): string
+    {
+        return chr((1 << 6) | 0b001)            // Random tag + usage bits
+            . pack('V', self::CANONICAL_LICENSE_ID)
+            . self::canonicalGuid();
+    }
+
+    /**
+     * A creator domain longer than the public cloud's, as a self-hosted
+     * container deployed under its own name would sign with.
+     */
+    private static function longDomain(): string
+    {
+        return str_repeat('creator-context-', 8) . 'example.com';
+    }
+
+    /** A signed envelope over the payload, by the only route that signs. */
     private function signedOwid(string $payload): Owid
     {
-        $owid = new Owid(self::TEST_DOMAIN, null, $payload);
-        $this->creator->sign($owid);
-        return $owid;
+        return $this->creator->create($payload);
     }
 
     private function signedOwidBase64(string $payload): string
     {
         return $this->signedOwid($payload)->asBase64();
+    }
+
+    /** A signed envelope dated as given, for tests that compare dates. */
+    private function signedOwidAt(
+        DateTimeImmutable $date,
+        string $payload
+    ): Owid {
+        return Envelopes::owid($this->crypto, self::TEST_DOMAIN, $date, $payload);
+    }
+
+    /**
+     * The three facts of a successful read, asserted together every time
+     * so that no test checks one and assumes the others.
+     */
+    private function assertParsed(FodIdParseResult $result): FodId
+    {
+        $this->assertTrue($result->ok);
+        $this->assertInstanceOf(FodId::class, $result->fodId);
+        $this->assertSame(ParseStatus::Parsed, $result->status);
+        return $result->fodId;
+    }
+
+    /**
+     * The three facts of a failed read. The status is compared by identity,
+     * so an OWID status must be the library's own enum case and not a copy
+     * or a renaming of it.
+     */
+    private function assertFailed(
+        FodIdParseResult $result,
+        ParseStatus|FodIdParseStatus $status
+    ): void {
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->fodId);
+        $this->assertSame($status, $result->status);
     }
 
     // ----- Current .NET coverage -----
@@ -145,15 +200,21 @@ class FodIdTest extends TestCase
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalHash(), $fod->getHash());
         $this->assertSame($owid->domain, $fod->getDomain());
-        // fromOwid copies via the wire form, which is minute-precise; the
-        // in-memory sign() date can carry sub-minute precision.
-        $this->assertSame(
-            $owid->date->format('Y-m-d H:i'),
-            $fod->getDate()->format('Y-m-d H:i')
-        );
+        $this->assertSame($owid->date, $fod->getDate());
         $this->assertSame($owid->version, $fod->getVersion());
         $this->assertSame($owid->payload, $fod->getPayload());
         $this->assertSame($owid->signature, $fod->getSignature());
+    }
+
+    public function testConstructorUnpacksAllThreeFields(): void
+    {
+        // The public constructor is the same read as fromOwid.
+        $owid = $this->signedOwid(self::canonicalPayload());
+        $fod = new FodId($owid);
+        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertSame($owid->asByteArray(), $fod->asByteArray());
     }
 
     public function testNullOwidThrows(): void
@@ -268,10 +329,9 @@ class FodIdTest extends TestCase
         // The creator domain is a deployment parameter, and a context
         // section of a version the reader does not implement may be any
         // length, so neither may stop an identifier parsing.
-        $domain = str_repeat('creator-context-', 8) . 'example.com';
+        $domain = self::longDomain();
         $payload = self::canonicalPayload() . str_repeat("\xCC", 200);
-        $owid = new Owid($domain, null, $payload);
-        (new Creator($domain, $this->creator->crypto()))->sign($owid);
+        $owid = (new Creator($domain, $this->crypto))->create($payload);
         foreach ([
             FodId::fromOwid($owid),
             FodId::fromByteArray($owid->asByteArray()),
@@ -287,6 +347,10 @@ class FodIdTest extends TestCase
     {
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
         $this->assertTrue($fod->verify($this->publicPem));
+        $this->assertSame(
+            SignatureStatus::SignatureValid,
+            $fod->signatureStatus($this->publicPem)
+        );
     }
 
     public function testBase64RoundtripPreservesAllFields(): void
@@ -326,11 +390,7 @@ class FodIdTest extends TestCase
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalRandomPayload()));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(FodId::GUID_LENGTH, strlen($fod->getHash()));
-        $guid = '';
-        for ($i = 0; $i < FodId::GUID_LENGTH; $i++) {
-            $guid .= chr(0x40 + $i);
-        }
-        $this->assertSame($guid, $fod->getHash());
+        $this->assertSame(self::canonicalGuid(), $fod->getHash());
     }
 
     public function testRandomPayloadOneByteShortThrows(): void
@@ -364,19 +424,28 @@ class FodIdTest extends TestCase
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(IdType::Reserved, $fod->getType());
         $this->assertSame(0, strlen($fod->getHash()));
+        // The answering surface agrees, as Reserved keeps its best-effort
+        // reading and never reports a type length.
+        $read = $this->assertParsed(FodId::tryFromBase64(
+            $this->signedOwidBase64($payload)
+        ));
+        $this->assertSame(IdType::Reserved, $read->getType());
     }
 
     // ----- Gap tests (runbook section 6b) -----
 
     public function testCompareTwo51DidsSamePayload(): void
     {
+        // Two reissues of the same value at different times.
         $payload = self::canonicalPayload();
-        $a = $this->signedOwid($payload);
-        $b = $this->signedOwid($payload);
-        // sign() stamps "now" to the minute, so set distinct dates to
-        // represent two reissues at different times.
-        $a->date = new DateTimeImmutable('2026-01-01T00:00:00+00:00');
-        $b->date = new DateTimeImmutable('2026-01-01T00:05:00+00:00');
+        $a = $this->signedOwidAt(
+            new DateTimeImmutable('2026-01-01T00:00:00+00:00'),
+            $payload
+        );
+        $b = $this->signedOwidAt(
+            new DateTimeImmutable('2026-01-01T00:05:00+00:00'),
+            $payload
+        );
 
         $fa = FodId::fromBase64($a->asBase64());
         $fb = FodId::fromBase64($b->asBase64());
@@ -389,40 +458,16 @@ class FodIdTest extends TestCase
 
     public function testConstructionDoesNotVerify(): void
     {
-        // An OWID with a present but tampered (invalid) signature still
-        // constructs and exposes all three fields - construction must not
+        // An envelope with a present but tampered (invalid) signature still
+        // reads and exposes all three fields, because reading must not
         // verify.
-        $raw = base64_decode($this->signedOwidBase64(self::canonicalPayload()));
+        $raw = $this->signedOwid(self::canonicalPayload())->asByteArray();
         $raw[strlen($raw) - 1] = $raw[strlen($raw) - 1] ^ "\xFF"; // corrupt sig
-        $tampered = Owid::fromByteArray($raw);
-        $fod = FodId::fromOwid($tampered);
+        $fod = FodId::fromByteArray($raw);
         $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalHash(), $fod->getHash());
-    }
-
-    public function testFromOwidIsDecoupledFromSourceOwid(): void
-    {
-        // Mutating the source OWID after construction must not affect the
-        // FodId (it holds an independent copy).
-        $owid = $this->signedOwid(self::canonicalPayload());
-        $fod = FodId::fromOwid($owid);
-        $owid->payload = str_repeat("\x00", FodId::PAYLOAD_LENGTH); // mutate source
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
-        $this->assertSame(self::canonicalHash(), $fod->getHash());
-        $this->assertSame(0x20, ord($fod->getPayload()[FodId::HASH_OFFSET]));
-    }
-
-    public function testConstructorIsDecoupledFromSourceOwid(): void
-    {
-        // The public constructor must copy the OWID too, not just fromOwid -
-        // mutating the source afterwards must not affect the FodId.
-        $owid = $this->signedOwid(self::canonicalPayload());
-        $fod = new FodId($owid);
-        $owid->payload = str_repeat("\x00", FodId::PAYLOAD_LENGTH); // mutate source
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
-        $this->assertSame(self::canonicalHash(), $fod->getHash());
-        $this->assertSame(0x20, ord($fod->getPayload()[FodId::HASH_OFFSET]));
+        $this->assertFalse($fod->verify($this->publicPem));
     }
 
     public function testVerifyWithWrongKeyReturnsFalse(): void
@@ -430,6 +475,10 @@ class FodIdTest extends TestCase
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
         $otherPublicPem = Crypto::new()->publicKeyPem();
         $this->assertFalse($fod->verify($otherPublicPem));
+        $this->assertSame(
+            SignatureStatus::SignatureInvalid,
+            $fod->signatureStatus($otherPublicPem)
+        );
     }
 
     public function testRoundtripThroughBytesConstructorPreservesAllFields(): void
@@ -475,6 +524,12 @@ class FodIdTest extends TestCase
         $this->assertSame($fromStandard->asByteArray(), $fromUnpadded->asByteArray());
         $this->assertSame(self::canonicalHash(), $fromUnpadded->getHash());
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fromUnpadded->getLicenseId());
+
+        // The answering surface normalises the same way.
+        foreach ([$standard, $urlSafe, $unpadded] as $form) {
+            $read = $this->assertParsed(FodId::tryFromBase64($form));
+            $this->assertSame($fromStandard->asByteArray(), $read->asByteArray());
+        }
     }
 
     public function testToStandardBase64RestoresAlphabetAndPadding(): void
@@ -501,6 +556,10 @@ class FodIdTest extends TestCase
                 $expected,
                 FodId::fromBase64($given)->asByteArray()
             );
+            $this->assertSame(
+                $expected,
+                $this->assertParsed(FodId::tryFromBase64($given))->asByteArray()
+            );
         }
         $this->assertSame($standard, FodId::toStandardBase64($clean . "\n"));
     }
@@ -520,14 +579,8 @@ class FodIdTest extends TestCase
     public function testDateMinutesEqualsTheEnvelopeDateField(): void
     {
         $minutes = 3456789;
-        $date = new DateTimeImmutable(
-            '@' . (\SwanCommunity\Owid\Io::BASE_TIMESTAMP + $minutes * 60)
-        );
-        $owid = new Owid(self::TEST_DOMAIN, $date, self::canonicalPayload());
-        $owid->signature = $this->creator->crypto()->signByteArray(
-            $owid->dataForCrypto()
-        );
-        $fod = FodId::fromOwid($owid);
+        $date = new DateTimeImmutable('@' . (Io::BASE_TIMESTAMP + $minutes * 60));
+        $fod = FodId::fromOwid($this->signedOwidAt($date, self::canonicalPayload()));
         $this->assertSame($minutes, $fod->getDateMinutes());
         // The wire form carries the same value little-endian after the
         // version byte and the null-terminated domain.
@@ -540,12 +593,9 @@ class FodIdTest extends TestCase
 
     public function testDateMinutesIsZeroAtTheBaseDate(): void
     {
-        $date = new DateTimeImmutable('@' . \SwanCommunity\Owid\Io::BASE_TIMESTAMP);
-        $owid = new Owid(self::TEST_DOMAIN, $date, self::canonicalPayload());
-        $owid->signature = $this->creator->crypto()->signByteArray(
-            $owid->dataForCrypto()
-        );
-        $this->assertSame(0, FodId::fromOwid($owid)->getDateMinutes());
+        $date = new DateTimeImmutable('@' . Io::BASE_TIMESTAMP);
+        $fod = FodId::fromOwid($this->signedOwidAt($date, self::canonicalPayload()));
+        $this->assertSame(0, $fod->getDateMinutes());
     }
 
     public function testContextSectionIsKeptInThePayload(): void
@@ -558,5 +608,355 @@ class FodIdTest extends TestCase
         $this->assertSame(self::canonicalHash(), $fod->getHash());
         $this->assertSame($payload, $fod->getPayload());
         $this->assertSame($section, substr($fod->getPayload(), FodId::PAYLOAD_LENGTH));
+    }
+
+    // ----- Reading without raising (runbook Phase 5) -----
+
+    public function testTryFromBase64ParsesACanonicalIdentifier(): void
+    {
+        $owid = $this->signedOwid(self::canonicalPayload());
+        $fod = $this->assertParsed(FodId::tryFromBase64($owid->asBase64()));
+        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertSame(IdType::HashedEmail, $fod->getType());
+        $this->assertSame(self::TEST_DOMAIN, $fod->getDomain());
+        $this->assertSame($owid->asByteArray(), $fod->asByteArray());
+    }
+
+    public function testTryFromByteArrayParsesACanonicalIdentifier(): void
+    {
+        $owid = $this->signedOwid(self::canonicalRandomPayload());
+        $fod = $this->assertParsed(FodId::tryFromByteArray($owid->asByteArray()));
+        $this->assertSame(IdType::Random, $fod->getType());
+        $this->assertSame(self::canonicalGuid(), $fod->getHash());
+        $this->assertSame($owid->asByteArray(), $fod->asByteArray());
+    }
+
+    public function testTryFromOwidParsesACanonicalIdentifier(): void
+    {
+        $owid = $this->signedOwid(self::canonicalPayload());
+        $fod = $this->assertParsed(FodId::tryFromOwid($owid));
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertSame($owid->signature, $fod->getSignature());
+    }
+
+    public function testTryFromBase64AcceptsALongerSelfHostedCreatorDomain(): void
+    {
+        $domain = self::longDomain();
+        $owid = (new Creator($domain, $this->crypto))->create(self::canonicalPayload());
+        foreach ([
+            FodId::tryFromBase64($owid->asBase64()),
+            FodId::tryFromBase64($owid->asBase64()),
+            FodId::tryFromByteArray($owid->asByteArray()),
+            FodId::tryFromOwid($owid),
+        ] as $result) {
+            $fod = $this->assertParsed($result);
+            $this->assertSame($domain, $fod->getDomain());
+            $this->assertSame(self::canonicalHash(), $fod->getHash());
+            $this->assertTrue($fod->verify($this->publicPem));
+        }
+    }
+
+    public function testTryFromBase64AcceptsALongerCreatorContextSection(): void
+    {
+        // A context section of a version this reader does not implement
+        // may be any length, so an older reader stays forward compatible
+        // with identifiers a newer cloud issues.
+        $section = "\x00" . str_repeat("\xAB", 200);
+        foreach ([
+            self::canonicalPayload() . $section,
+            self::canonicalRandomPayload() . $section,
+        ] as $payload) {
+            $owid = $this->signedOwid($payload);
+            foreach ([
+                FodId::tryFromBase64($owid->asBase64()),
+                FodId::tryFromByteArray($owid->asByteArray()),
+                FodId::tryFromOwid($owid),
+            ] as $result) {
+                $fod = $this->assertParsed($result);
+                $this->assertSame($payload, $fod->getPayload());
+                $this->assertSame(
+                    $section,
+                    substr($fod->getPayload(), FodId::HEADER_LENGTH + strlen($fod->getHash()))
+                );
+            }
+        }
+    }
+
+    public function testALongerPayloadIsNotRejectedForItsLength(): void
+    {
+        // There is no upper bound in this package. Every length past the
+        // base for the type reads, and the value is the same each time.
+        foreach ([1, 19, 64, 200, 4096] as $extra) {
+            $payload = self::canonicalPayload() . str_repeat("\xCC", $extra);
+            $fod = $this->assertParsed(FodId::tryFromBase64(
+                $this->signedOwidBase64($payload)
+            ));
+            $this->assertSame(self::canonicalHash(), $fod->getHash());
+            $this->assertSame(FodId::PAYLOAD_LENGTH + $extra, strlen($fod->getPayload()));
+        }
+    }
+
+    public function testTooShortRandomPayloadReportsInvalidTypePayloadLength(): void
+    {
+        $random = self::canonicalRandomPayload();
+        foreach ([
+            FodId::HEADER_LENGTH,               // header only, no value
+            FodId::RANDOM_PAYLOAD_LENGTH - 1,   // one byte short of the GUID
+        ] as $length) {
+            $owid = $this->signedOwid(substr($random, 0, $length));
+            foreach ([
+                FodId::tryFromBase64($owid->asBase64()),
+                FodId::tryFromByteArray($owid->asByteArray()),
+                FodId::tryFromOwid($owid),
+            ] as $result) {
+                $this->assertFailed(
+                    $result,
+                    FodIdParseStatus::InvalidTypePayloadLength
+                );
+            }
+        }
+    }
+
+    public function testTooShortHashPayloadReportsInvalidTypePayloadLength(): void
+    {
+        // Probabilistic and HashedEmail both carry a 32 byte value, and a
+        // Random-sized payload under either tag is a byte count that fits
+        // the wrong type.
+        foreach ([0b0000_0101, 0b1000_0101] as $flags) {
+            $payload = self::canonicalPayload();
+            $payload[FodId::FLAGS_OFFSET] = chr($flags);
+            foreach ([
+                FodId::HEADER_LENGTH,
+                FodId::RANDOM_PAYLOAD_LENGTH,
+                FodId::PAYLOAD_LENGTH - 1,
+            ] as $length) {
+                $owid = $this->signedOwid(substr($payload, 0, $length));
+                foreach ([
+                    FodId::tryFromBase64($owid->asBase64()),
+                    FodId::tryFromByteArray($owid->asByteArray()),
+                    FodId::tryFromOwid($owid),
+                ] as $result) {
+                    $this->assertFailed(
+                        $result,
+                        FodIdParseStatus::InvalidTypePayloadLength
+                    );
+                }
+            }
+        }
+    }
+
+    public function testPayloadShorterThanTheHeaderReportsPayloadTooShort(): void
+    {
+        // Every length under the header, including no payload at all, is
+        // the same answer, because the type cannot be read to say more.
+        for ($length = 0; $length < FodId::HEADER_LENGTH; $length++) {
+            $owid = $this->signedOwid(substr(self::canonicalPayload(), 0, $length));
+            foreach ([
+                FodId::tryFromBase64($owid->asBase64()),
+                FodId::tryFromByteArray($owid->asByteArray()),
+                FodId::tryFromOwid($owid),
+            ] as $result) {
+                $this->assertFailed($result, FodIdParseStatus::PayloadTooShort);
+            }
+        }
+    }
+
+    public function testInvalidBase64ReportsTheOwidStatus(): void
+    {
+        foreach ([
+            'This is not valid Base64!@#$',
+            'A',                     // a length that encodes no whole byte
+            '****',
+            $this->signedOwidBase64(self::canonicalPayload()) . '!',
+        ] as $value) {
+            $this->assertFailed(
+                FodId::tryFromBase64($value),
+                ParseStatus::InvalidBase64
+            );
+        }
+    }
+
+    public function testAnOwidDeclarationMismatchIsPassedThroughUnchanged(): void
+    {
+        // A byte after the envelope makes the declared payload count
+        // disagree with the bytes present. The library's status arrives
+        // as itself, and with no 51Did there is nothing whose signature
+        // could be examined.
+        $raw = $this->signedOwid(self::canonicalPayload())->asByteArray();
+        $longer = $raw . "\x00";
+        $this->assertFailed(
+            FodId::tryFromByteArray($longer),
+            ParseStatus::ByteCountMismatch
+        );
+        $this->assertFailed(
+            FodId::tryFromBase64(base64_encode($longer)),
+            ParseStatus::ByteCountMismatch
+        );
+        // A declaration raised above the bytes present is the same answer.
+        $offset = 1 + strlen(self::TEST_DOMAIN) + 1 + 4;
+        $inflated = $raw;
+        $inflated[$offset] = chr(ord($raw[$offset]) + 1);
+        $this->assertFailed(
+            FodId::tryFromByteArray($inflated),
+            ParseStatus::ByteCountMismatch
+        );
+    }
+
+    public function testEveryOwidStatusIsPassedThroughAsTheLibraryReportsIt(): void
+    {
+        $cases = [
+            [ParseStatus::AbsentNode, "\x00"],
+            [ParseStatus::UnsupportedVersion, "\x09" . self::TEST_DOMAIN . "\x00"],
+            [ParseStatus::UnexpectedEnd, "\x03" . self::TEST_DOMAIN],
+            [ParseStatus::UnexpectedEnd, "\x03" . self::TEST_DOMAIN . "\x00\x01"],
+            [ParseStatus::InvalidDomainEncoding, "\x03" . str_repeat('a', 300)],
+        ];
+        foreach ($cases as [$status, $bytes]) {
+            $this->assertFailed(FodId::tryFromByteArray($bytes), $status);
+            $this->assertFailed(FodId::tryFromBase64(base64_encode($bytes)), $status);
+        }
+    }
+
+    public function testAbsentOrWrongTypedInputIsReportedNotRaised(): void
+    {
+        foreach ([null, '', ' ', "\n", "\t \r\n"] as $absent) {
+            $this->assertFailed(
+                FodId::tryFromBase64($absent),
+                ParseStatus::MissingInput
+            );
+        }
+        foreach ([null, ''] as $absent) {
+            $this->assertFailed(
+                FodId::tryFromByteArray($absent),
+                ParseStatus::MissingInput
+            );
+        }
+        // A repeated query parameter with brackets reaches PHP as an array.
+        foreach ([['a', 'b'], 42, 1.5, true, new \stdClass()] as $other) {
+            $this->assertFailed(
+                FodId::tryFromBase64($other),
+                ParseStatus::InvalidInputType
+            );
+            $this->assertFailed(
+                FodId::tryFromByteArray($other),
+                ParseStatus::InvalidInputType
+            );
+        }
+    }
+
+    public function testAParsedIdentifierWithABadSignatureVerifiesAsInvalid(): void
+    {
+        // Structurally sound and cryptographically wrong. Reading succeeds,
+        // because reading never verifies, and the verification then says
+        // exactly that the signature does not match.
+        $raw = $this->signedOwid(self::canonicalPayload())->asByteArray();
+        $raw[strlen($raw) - 5] = $raw[strlen($raw) - 5] ^ "\x01";
+        $fod = $this->assertParsed(FodId::tryFromBase64(base64_encode($raw)));
+        $this->assertSame(self::canonicalHash(), $fod->getHash());
+        $this->assertFalse($fod->verify($this->publicPem));
+        $this->assertSame(
+            SignatureStatus::SignatureInvalid,
+            $fod->signatureStatus($this->publicPem)
+        );
+    }
+
+    public function testAKeyThatCannotBeReadIsNotReportedAsAnInvalidSignature(): void
+    {
+        $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
+        foreach (['', 'not a key', "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"] as $pem) {
+            $status = $fod->signatureStatus($pem);
+            $this->assertSame(SignatureStatus::InvalidKey, $status);
+            $this->assertNotSame(SignatureStatus::SignatureInvalid, $status);
+            try {
+                $fod->verify($pem);
+                $this->fail('Expected verify to raise for a key it cannot read.');
+            } catch (OwidException $exception) {
+                $this->addToAssertionCount(1);
+            }
+        }
+    }
+
+    public function testTheThrowingSurfaceStillThrowsTheDocumentedTypes(): void
+    {
+        $raw = $this->signedOwid(self::canonicalPayload())->asByteArray();
+        $shortHash = $this->signedOwid(substr(self::canonicalPayload(), 0, FodId::PAYLOAD_LENGTH - 1));
+        $shortRandom = $this->signedOwid(substr(self::canonicalRandomPayload(), 0, FodId::HEADER_LENGTH));
+        $noHeader = $this->signedOwid("\xA5\x01");
+
+        // The envelope could not be read, so the OWID exception, naming
+        // the library's status in the message.
+        $owidFailures = [
+            [fn () => FodId::fromBase64('not base64!'), ParseStatus::InvalidBase64],
+            [fn () => FodId::fromBase64(base64_encode($raw . "\x00")), ParseStatus::ByteCountMismatch],
+            [fn () => FodId::fromByteArray($raw . "\x00"), ParseStatus::ByteCountMismatch],
+            [fn () => FodId::fromByteArray("\x00"), ParseStatus::AbsentNode],
+            [fn () => FodId::fromByteArray("\x03" . self::TEST_DOMAIN), ParseStatus::UnexpectedEnd],
+            [fn () => FodId::fromBase64(''), ParseStatus::MissingInput],
+        ];
+        foreach ($owidFailures as [$read, $status]) {
+            try {
+                $read();
+                $this->fail('Expected an OwidException for ' . $status->value);
+            } catch (OwidException $exception) {
+                $this->assertStringContainsString($status->value, $exception->getMessage());
+            }
+        }
+
+        // The envelope was sound and the payload does not fit, so the
+        // argument exception, naming the package's status.
+        $payloadFailures = [
+            [fn () => FodId::fromBase64($shortHash->asBase64()), FodIdParseStatus::InvalidTypePayloadLength],
+            [fn () => FodId::fromByteArray($shortRandom->asByteArray()), FodIdParseStatus::InvalidTypePayloadLength],
+            [fn () => FodId::fromOwid($noHeader), FodIdParseStatus::PayloadTooShort],
+            [fn () => new FodId($noHeader), FodIdParseStatus::PayloadTooShort],
+        ];
+        foreach ($payloadFailures as [$read, $status]) {
+            try {
+                $read();
+                $this->fail('Expected an InvalidArgumentException for ' . $status->value);
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString($status->value, $exception->getMessage());
+            }
+        }
+    }
+
+    public function testTheTwoSurfacesAgreeOnEveryInput(): void
+    {
+        // Whatever the answering surface refuses, the raising surface
+        // raises for, and whatever one reads the other reads to the same
+        // bytes, because both run the one set of checks.
+        $good = $this->signedOwid(self::canonicalPayload());
+        $inputs = [
+            $good->asBase64(),
+            FodId::fromOwid($good)->asBase64Url(),
+            $this->signedOwidBase64(self::canonicalRandomPayload()),
+            $this->signedOwidBase64(self::canonicalPayload() . str_repeat("\xAB", 50)),
+            $this->signedOwidBase64(''),
+            $this->signedOwidBase64(substr(self::canonicalPayload(), 0, 20)),
+            'garbage',
+            base64_encode($good->asByteArray() . "\x01"),
+            '',
+        ];
+        foreach ($inputs as $input) {
+            $result = FodId::tryFromBase64($input);
+            try {
+                $fod = FodId::fromBase64($input);
+                $this->assertTrue($result->ok, 'fromBase64 read what tryFromBase64 refused');
+                $this->assertSame($fod->asByteArray(), $result->fodId->asByteArray());
+            } catch (OwidException | InvalidArgumentException $exception) {
+                $this->assertFalse($result->ok, 'fromBase64 raised where tryFromBase64 read');
+                $this->assertStringContainsString($result->status->value, $exception->getMessage());
+            }
+        }
+    }
+
+    public function testAResultCannotBeAltered(): void
+    {
+        $result = FodId::tryFromBase64('garbage');
+        $this->expectException(\Error::class);
+        // @phpstan-ignore-next-line - the point is that the write is refused
+        $result->ok = true;
     }
 }

@@ -262,18 +262,21 @@ final class DidClient
     /**
      * Verifies the identifier's signature through the cloud's verify
      * endpoint, which needs no licence key and counts as one use. A string
-     * is sent as given, in either base64 alphabet, and a {@see FodId} is
-     * sent in the URL-safe form. The identifier goes under both parameter
-     * names, `51did` and `owid`, so the request works with hosts that read
-     * either one. Hosts that recognise both prefer `51did` and keep `owid`
-     * as a compatibility alias.
+     * is read first with {@see FodId::tryFromBase64()} and refused when it
+     * is not a 51Did, so a malformed value costs no use, and is otherwise
+     * sent as given, in either base64 alphabet. A {@see FodId} is sent in
+     * the URL-safe form. The identifier goes under both parameter names,
+     * `51did` and `owid`, so the request works with hosts that read either
+     * one. Hosts that recognise both prefer `51did` and keep `owid` as a
+     * compatibility alias.
      *
      * @return bool True for `{ "valid": true }`, false for
      *     `{ "valid": false }`.
      *
-     * @throws InvalidArgumentException when a value is far longer than any
-     *     identifier and is refused before the request, or the cloud could
-     *     not parse it, carrying the cloud's message in the latter case.
+     * @throws InvalidArgumentException when a string value is far longer
+     *     than any identifier or is not a 51Did, either of which is refused
+     *     before the request with the message naming which, or when the
+     *     cloud answered 400, carrying the cloud's message.
      * @throws CloudException for any other status.
      * @throws RuntimeException when the cloud cannot be reached.
      */
@@ -322,10 +325,10 @@ final class DidClient
      * @return RedeemResult For a 200, and for a 503 where the context is
      *     {@see ContextOutcome::Unconfirmed} and the caller may retry.
      *
-     * @throws InvalidArgumentException when a value is far longer than any
-     *     identifier and is refused before the request, or the cloud
-     *     answered 400 because it was malformed, carrying the cloud's
-     *     message in the latter case.
+     * @throws InvalidArgumentException when a string value is far longer
+     *     than any identifier or is not a 51Did, either of which is refused
+     *     before the request with the message naming which, or when the
+     *     cloud answered 400, carrying the cloud's message.
      * @throws NotSupportedException when the host does not offer the
      *     creator context (404).
      * @throws CloudException for any other status.
@@ -569,12 +572,18 @@ final class DidClient
 
     /**
      * The identifier as sent on the wire. A {@see FodId} goes in the
-     * URL-safe form, which needs no encoding. A string is sent as given, so
-     * the cloud judges it, which is what gives the caller the cloud's own
-     * message for a value that does not parse. Only a value far longer
-     * than any identifier is refused here, by
-     * {@see DidClient::MAXIMUM_ENCODED_LENGTH}, so that obviously malformed
-     * input costs neither a key fetch nor a call.
+     * URL-safe form, which needs no encoding, and has already been read so
+     * there is nothing to check. A string is checked here and sent as
+     * given, in whichever alphabet it arrived, so the cloud sees exactly
+     * what the caller was handed.
+     *
+     * Two things are refused before any key fetch or call, in this order.
+     * A value longer than {@see DidClient::MAXIMUM_ENCODED_LENGTH} is
+     * refused before it is even read, because the figure is client policy
+     * for obviously hostile input and not a property of the format. Then a
+     * string that {@see FodId::tryFromBase64()} does not read as a 51Did is
+     * refused with the status named, so a malformed value costs no use and
+     * the caller learns the specific reason rather than a generic one.
      */
     private static function wireForm(FodId|string $fodId): string
     {
@@ -584,6 +593,15 @@ final class DidClient
                 'The value is far longer than any identifier, so it was '
                 . 'refused without calling the cloud.'
             );
+        }
+        if (is_string($fodId)) {
+            $read = FodId::tryFromBase64($fodId);
+            if (!$read->ok) {
+                throw new InvalidArgumentException(
+                    'The value is not a 51Did (' . $read->status->value
+                    . '), so it was refused without calling the cloud.'
+                );
+            }
         }
         return $value;
     }
