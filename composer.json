@@ -1,6 +1,6 @@
 {
     "name": "51degrees/fiftyone.pipeline.did",
-    "description": "Strongly typed reader for the 51Did (51Degrees Identifier) value returned by the 51Degrees Cloud service, and a client for the cloud's 51Did endpoints (public keys, signature verification and creator context redemption). Parses the OWID envelope and exposes the Flags, License Id and value (Hash) plus the identifier type. Compare values, never envelopes.",
+    "description": "Strongly typed reader for the 51Did (51Degrees Identifier) returned by the 51Degrees Cloud service, and a client for the cloud's 51Did endpoints (public keys, signature verification and creator context redemption). Parses the OWID envelope and exposes the Flags, License Id and match key plus the identifier type. Compare match keys, never envelopes.",
     "keywords": [
         "51degrees",
         "51did",

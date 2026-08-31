@@ -35,32 +35,33 @@ use SwanCommunity\Owid\SignatureStatus;
 use SwanCommunity\Owid\Version;
 
 /**
- * A strongly typed reader for the 51Did (51Degrees Identifier) value returned
- * by the 51Degrees Cloud service.
+ * A strongly typed reader for the 51Did (51Degrees Identifier) returned by
+ * the 51Degrees Cloud service.
  *
  * A 51Did is described at three levels. The **51Did** is the identifier as a
  * whole. The **envelope** is the signed {@see Owid} that carries it (version,
  * domain, date, payload, signature), re-issued fresh on every call. The
- * **value** is the stable, comparable part of the payload after the Flags and
- * License Id, exposed via {@see FodId::getHash()}. Two 51Dids for the same
- * inputs share the same value even though their envelopes differ. *Compare
- * values, never envelopes.*
+ * **match key** is the stable, comparable part of the payload after the Flags
+ * and License Id, exposed via {@see FodId::getMatchKey()}. Two 51Dids for the
+ * same inputs share the same match key even though their envelopes differ.
+ * *Compare match keys, never envelopes.* The name follows the Model Terms for
+ * Marketing, which call that part of a 51Did the match key.
  *
  * Payload layout. The header (offsets 0-4) is shared by every identifier
  * type, and bits 6-7 of Flags select the {@see IdType} and the length of the
- * value that follows (32-byte SHA-256 for Probabilistic and HashedEmail, or
- * 16 GUID bytes for Random). An identifier carrying a creator context has a
- * further section after the value, which the reader keeps in the payload and
- * does not interpret. There is no upper bound on the payload here, because
- * the lengths of that section belong to the cloud and an older reader has to
- * keep accepting an identifier from a newer one.
+ * match key that follows (32-byte SHA-256 for Probabilistic and HashedEmail,
+ * or 16 GUID bytes for Random). An identifier carrying a creator context has
+ * a further section after the match key, which the reader keeps in the
+ * payload and does not interpret. There is no upper bound on the payload
+ * here, because the lengths of that section belong to the cloud and an older
+ * reader has to keep accepting an identifier from a newer one.
  *
  * Reading is two steps. The OWID library reads the envelope and this class
  * then reads the payload inside it. The `try` factories,
  * {@see FodId::tryFromBase64()}, {@see FodId::tryFromByteArray()} and
  * {@see FodId::tryFromOwid()}, answer with a {@see FodIdParseResult} rather
- * than raising, because the value arrives from outside and failing to be a
- * 51Did is an ordinary outcome, and whoever sends the value chooses how often
+ * than raising, because the text arrives from outside and failing to be a
+ * 51Did is an ordinary outcome, and whoever sends the text chooses how often
  * that happens. The older factories, {@see FodId::fromBase64()},
  * {@see FodId::fromByteArray()}, {@see FodId::fromOwid()} and the
  * constructor, raise for the same inputs and are kept for callers written
@@ -87,23 +88,27 @@ final class FodId
     public const LICENSE_ID_OFFSET = 1;
     /** Byte length of the License Id field. */
     public const LICENSE_ID_LENGTH = 4;
-    /** Byte offset of the value (Hash) field within the payload. */
+    /** Byte offset of the match key field within the payload. */
     public const HASH_OFFSET = 5;
-    /** Byte length of the SHA-256 value. */
+    /** Byte length of the match key field (SHA-256). */
     public const HASH_LENGTH = 32;
     /** Byte length of the header (Flags + License Id) common to every type. */
     public const HEADER_LENGTH = self::HASH_OFFSET;
-    /** Byte length of the GUID value carried by Random identifiers. */
+    /** Byte length of the GUID match key carried by Random identifiers. */
     public const GUID_LENGTH = 16;
     /** Minimum byte length of a Random 51Did payload. */
     public const RANDOM_PAYLOAD_LENGTH = self::HEADER_LENGTH + self::GUID_LENGTH;
-    /** Minimum byte length of a Probabilistic or HashedEmail 51Did payload. */
+    /**
+     * Minimum byte length of a Probabilistic or HashedEmail 51Did payload
+     * (Flags + License Id + match key). Random payloads are shorter, see
+     * {@see FodId::RANDOM_PAYLOAD_LENGTH}.
+     */
     public const PAYLOAD_LENGTH = self::HASH_OFFSET + self::HASH_LENGTH;
 
     private Owid $owid;
     private int $flags;
     private int $licenseId;
-    private string $hash;
+    private string $matchKey;
 
     /**
      * Promotes an already-read {@see Owid} into a 51Did by unpacking its
@@ -127,7 +132,7 @@ final class FodId
             );
         }
         $this->owid = $owid;
-        [$this->flags, $this->licenseId, $this->hash] = $read;
+        [$this->flags, $this->licenseId, $this->matchKey] = $read;
     }
 
     /**
@@ -290,18 +295,18 @@ final class FodId
     }
 
     /**
-     * Reads the header and the value from a payload, or names why the
+     * Reads the header and the match key from a payload, or names why the
      * payload does not fit a 51Did. This is the one place the payload rules
      * live, so the raising and the answering surfaces cannot drift apart.
      *
      * The header must be present before the type can be read, and the type
-     * then says how many value bytes must follow. A Reserved identifier
+     * then says how many match key bytes must follow. A Reserved identifier
      * takes whatever follows the header, which is the existing best-effort
-     * reading of a type not yet assigned. Anything after the value is a
+     * reading of a type not yet assigned. Anything after the match key is a
      * creator context section and is left in the payload unread.
      *
      * @return array{int, int, string}|FodIdParseStatus the flags, the licence
-     *     id and the value bytes, or the reason the payload does not fit
+     *     id and the match key bytes, or the reason the payload does not fit
      */
     private static function readPayload(string $payload): array|FodIdParseStatus
     {
@@ -310,8 +315,11 @@ final class FodId
             return FodIdParseStatus::PayloadTooShort;
         }
         $flags = ord($payload[self::FLAGS_OFFSET]);
-        $valueLength = self::valueLength(IdType::fromFlags($flags), $length);
-        if ($length < self::HEADER_LENGTH + $valueLength) {
+        $matchKeyLength = self::matchKeyLength(
+            IdType::fromFlags($flags),
+            $length
+        );
+        if ($length < self::HEADER_LENGTH + $matchKeyLength) {
             return FodIdParseStatus::InvalidTypePayloadLength;
         }
         // Little-endian unsigned 32-bit. 'V' yields a non-negative int on
@@ -324,16 +332,19 @@ final class FodId
         return [
             $flags,
             $licenseId,
-            substr($payload, self::HASH_OFFSET, $valueLength),
+            substr($payload, self::HASH_OFFSET, $matchKeyLength),
         ];
     }
 
     /**
-     * The number of value bytes the type requires after the header, given
-     * the payload length for the Reserved case, which takes the remainder.
+     * The number of match key bytes the type requires after the header,
+     * given the payload length for the Reserved case, which takes the
+     * remainder.
      */
-    private static function valueLength(IdType $type, int $payloadLength): int
-    {
+    private static function matchKeyLength(
+        IdType $type,
+        int $payloadLength
+    ): int {
         return match ($type) {
             IdType::Random => self::GUID_LENGTH,
             IdType::Reserved => $payloadLength - self::HEADER_LENGTH,
@@ -364,7 +375,7 @@ final class FodId
             '51Did payload for the %s type must be at least %d bytes and %d '
             . 'were given (%s).',
             $type->name,
-            self::HEADER_LENGTH + self::valueLength($type, $length),
+            self::HEADER_LENGTH + self::matchKeyLength($type, $length),
             $length,
             $status->value
         );
@@ -396,13 +407,29 @@ final class FodId
     }
 
     /**
-     * The value bytes (a 32-byte SHA-256, or 16 GUID bytes for Random) as a
-     * binary string. This is the stable, comparable part of the envelope, so
-     * use it as the cache and dedup key.
+     * The match key from the payload (a 32-byte SHA-256 for Probabilistic and
+     * HashedEmail identifiers, or 16 GUID bytes for Random) as a binary
+     * string. This is the stable, comparable part of the envelope. Two
+     * 51Dids for the same inputs share the same match key even though their
+     * envelopes (date, signature) differ on every issue, so use the match
+     * key as the cache and dedup key.
+     */
+    public function getMatchKey(): string
+    {
+        return $this->matchKey;
+    }
+
+    /**
+     * Deprecated alias for {@see FodId::getMatchKey()}. The stable,
+     * comparable part of a 51Did is now called the match key, mirroring the
+     * Model Terms for Marketing vocabulary. Returns the same bytes.
+     *
+     * @deprecated Renamed to {@see FodId::getMatchKey()}. This alias will be
+     *             removed in a future release.
      */
     public function getHash(): string
     {
-        return $this->hash;
+        return $this->getMatchKey();
     }
 
     /** The OWID version. */

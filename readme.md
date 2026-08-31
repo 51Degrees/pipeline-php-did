@@ -12,11 +12,15 @@ package. Composer package `51degrees/fiftyone.pipeline.did`, namespace
 - The **envelope** is the data model that carries it: a signed OWID holding the
   version, domain, date, payload and signature. It changes byte-for-byte every
   time the cloud issues one.
-- The **value** is the stable, comparable part of the payload after the Flags
-  and License Id: a 32-byte SHA-256 for Probabilistic and HashedEmail
-  identifiers, or 16 GUID bytes for Random.
+- The **match key** is the stable, comparable part of the payload after the
+  Flags and License Id, a 32-byte SHA-256 for Probabilistic and HashedEmail
+  identifiers, or 16 GUID bytes for Random. Two 51Dids for the same inputs
+  share the same match key even though their envelopes differ. The name
+  follows the Model Terms for Marketing, which call that part of a 51Did the
+  match key.
 
-**Comparing two 51Dids means comparing their values, never their envelopes.**
+**Comparing two 51Dids means comparing their match keys, never their
+envelopes.**
 
 ## Payload layout
 
@@ -24,10 +28,10 @@ package. Composer package `51degrees/fiftyone.pipeline.did`, namespace
 |-------:|-------:|------------|-------------------------------------------------|
 |      0 |      1 | Flags      | uint8: bits 0-2 usage, bits 6-7 identifier type |
 |      1 |      4 | LicenseId  | uint32 (little-endian)                          |
-|      5 |  16/32 | Value      | SHA-256 (Probabilistic, HashedEmail) or GUID (Random) |
+|      5 |  16/32 | Match key  | SHA-256 (Probabilistic, HashedEmail) or GUID (Random) |
 
-| Bits 7-6 | `IdType`        | Value length | Minimum payload |
-|---------:|-----------------|-------------:|----------------:|
+| Bits 7-6 | `IdType`        | Match key length | Minimum payload |
+|---------:|-----------------|-----------------:|----------------:|
 |     `00` | `Probabilistic` |           32 |              37 |
 |     `01` | `Random`        |           16 |              21 |
 |     `10` | `HashedEmail`   |           32 |              37 |
@@ -37,15 +41,15 @@ Identifiers issued before the type tag existed have bits 6-7 zeroed and decode
 as `Probabilistic`.
 
 The minimum payload is the only length rule this package applies. There is
-no upper bound here, because anything after the value is a creator context
-section whose lengths belong to the cloud, and an older reader has to keep
-accepting an identifier a newer cloud issues.
+no upper bound here, because anything after the match key is a creator
+context section whose lengths belong to the cloud, and an older reader has
+to keep accepting an identifier a newer cloud issues.
 
 On an identifier carrying a creator context the four LicenseId bytes hold an
 encrypted value that only 51Degrees can turn back into a licence identifier,
 so `getLicenseId()` is the field's raw value and identifies nothing outside
-51Degrees. Such an identifier also carries a context section after the value,
-which the reader keeps in the payload and does not interpret.
+51Degrees. Such an identifier also carries a context section after the
+match key, which the reader keeps in the payload and does not interpret.
 
 ## Requirements & OWID dependency
 
@@ -103,7 +107,7 @@ $fodId = $result->fodId;
 $flags     = $fodId->getFlags();
 $type      = $fodId->getType();        // IdType::Probabilistic / Random / HashedEmail
 $licenseId = $fodId->getLicenseId();
-$value     = $fodId->getHash();        // SHA-256 or GUID bytes, see type
+$matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
 
 // Delegated OWID-level fields and operations. Reading never verifies.
 $domain   = $fodId->getDomain();
@@ -116,7 +120,9 @@ $minutes  = $fodId->getDateMinutes(); // minutes since 2020-01-01T00:00:00Z
 
 `FodId::fromBase64()`, `FodId::fromByteArray()`, `FodId::fromOwid()` and the
 constructor remain and raise for the same inputs the `try` factories
-report, so code written against them keeps working.
+report, so code written against them keeps working. `getHash()` remains as
+a deprecated alias of `getMatchKey()` answering the same bytes, and will be
+removed in a future release.
 
 ## Reading versus verifying
 
@@ -157,7 +163,7 @@ things the payload can get wrong are this package's own
 | `ByteCountMismatch` | OWID | The declared payload length disagrees with the bytes present, whichever way they fall short |
 | `AbsentNode` | OWID | The marker for an absent OWID, a single zero byte, which is well formed and is not an identifier |
 | `PayloadTooShort` | this package | The payload holds fewer than the 5 header bytes, so the type cannot be read |
-| `InvalidTypePayloadLength` | this package | The header names a type whose value the payload is too short to hold, being 16 bytes after the header for Random and 32 for Probabilistic or HashedEmail |
+| `InvalidTypePayloadLength` | this package | The header names a type whose match key the payload is too short to hold, being 16 bytes after the header for Random and 32 for Probabilistic or HashedEmail |
 
 Both enums are string backed with the cross language name of the status,
 so `$result->status->value` can be logged or carried between services
@@ -226,9 +232,13 @@ $a = FodId::fromBase64($idprobglobalA);
 $b = FodId::fromBase64($idprobglobalB);
 
 // The envelope (date, signature, base64) differs across reissues.
-// The value inside the payload is stable - this is what you compare:
-$sameValue = $a->getHash() === $b->getHash();
+// The match key inside the payload is stable, so that is what you compare.
+$sameMatchKey = $a->getMatchKey() === $b->getMatchKey();
 ```
+
+Use `getMatchKey()` as the cache and dedup key. The same match key means
+the same browser instance under the same usage policy on the same licence
+key (for `idproblic`) or across all callers (for `idprobglobal`).
 
 ## Verifying on your server
 

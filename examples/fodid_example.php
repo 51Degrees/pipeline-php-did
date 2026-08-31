@@ -31,8 +31,8 @@ declare(strict_types=1);
  * generating an ECDSA P-256 key pair and signing a canonical 37-byte
  * payload, then reads it back and prints the three payload fields. It also
  * shows the headline use case, which is that a 51Did is re-issued fresh on
- * every call (the envelope, hence the base64, changes) while the value (the
- * Hash) is stable. Compare values, never envelopes.
+ * every call (the envelope, hence the base64, changes) while the match key
+ * is stable. Compare match keys, never envelopes.
  *
  * Reading answers rather than raising. A value arriving from outside may be
  * anything at all, so tryFromBase64 reports whether it was a 51Did and, when
@@ -50,11 +50,11 @@ const DOMAIN = '51degrees.com';
 /** A canonical 37-byte Probabilistic payload. */
 function samplePayload(): string
 {
-    $hash = '';
+    $matchKey = '';
     for ($i = 0; $i < FodId::HASH_LENGTH; $i++) {
-        $hash .= chr(0x20 + $i);
+        $matchKey .= chr(0x20 + $i);
     }
-    return chr(0x00) . pack('V', 0x12345678) . $hash;
+    return chr(0x00) . pack('V', 0x12345678) . $matchKey;
 }
 
 /**
@@ -83,22 +83,22 @@ echo '  Domain    : ' . $fodId->getDomain() . "\n";
 echo '  Type      : ' . $fodId->getType()->name . "\n";
 echo '  Flags     : 0x' . dechex($fodId->getFlags()) . "\n";
 echo '  LicenseId : ' . $fodId->getLicenseId() . "\n";
-echo '  Hash      : ' . bin2hex($fodId->getHash()) . "\n";
+echo '  Match key : ' . bin2hex($fodId->getMatchKey()) . "\n";
 // Reading never verifies, so the signature is a separate question.
 echo '  Verifies  : ' . ($fodId->verify($crypto->publicKeyPem()) ? 'true' : 'false') . "\n";
 echo '  Signature : ' . $fodId->signatureStatus($crypto->publicKeyPem())->value . "\n";
 
 $reissued = FodId::fromBase64(issue($creator, $payload));
 $sameEnvelope = $fodId->asBase64() === $reissued->asBase64();
-$sameValue = $fodId->getHash() === $reissued->getHash();
+$sameMatchKey = $fodId->getMatchKey() === $reissued->getMatchKey();
 
 echo "\nSame payload, re-issued:\n";
 echo '  Same envelope (base64) : ' . ($sameEnvelope ? 'true' : 'false') . "\n";
-echo '  Same value (Hash)      : ' . ($sameValue ? 'true' : 'false') . "\n";
+echo '  Same match key         : ' . ($sameMatchKey ? 'true' : 'false') . "\n";
 
-if ($sameEnvelope || !$sameValue) {
+if ($sameEnvelope || !$sameMatchKey) {
     throw new RuntimeException(
-        'Expected a different envelope but the same value across reissues.'
+        'Expected a different envelope but the same match key across reissues.'
     );
 }
 
