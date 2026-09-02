@@ -65,7 +65,7 @@ class FodIdTest extends TestCase
     private static function canonicalMatchKey(): string
     {
         $matchKey = '';
-        for ($i = 0; $i < FodId::HASH_LENGTH; $i++) {
+        for ($i = 0; $i < FodId::MATCH_KEY_LENGTH; $i++) {
             $matchKey .= chr(0x20 + $i);
         }
         return $matchKey;
@@ -154,16 +154,25 @@ class FodIdTest extends TestCase
     {
         $this->assertSame(
             FodId::PAYLOAD_LENGTH,
-            FodId::HASH_OFFSET + FodId::HASH_LENGTH
+            FodId::MATCH_KEY_OFFSET + FodId::MATCH_KEY_LENGTH
         );
         $this->assertSame(
-            FodId::HASH_OFFSET,
+            FodId::MATCH_KEY_OFFSET,
             FodId::LICENSE_ID_OFFSET + FodId::LICENSE_ID_LENGTH
         );
         $this->assertSame(
             FodId::RANDOM_PAYLOAD_LENGTH,
-            FodId::HASH_OFFSET + FodId::GUID_LENGTH
+            FodId::MATCH_KEY_OFFSET + FodId::GUID_LENGTH
         );
+    }
+
+    public function testDeprecatedConstantAliasesHoldTheSameValues(): void
+    {
+        // HASH_OFFSET and HASH_LENGTH stay as deprecated aliases so callers
+        // written against the old names keep working, and they hold the same
+        // values as the match key constants.
+        $this->assertSame(FodId::MATCH_KEY_OFFSET, FodId::HASH_OFFSET);
+        $this->assertSame(FodId::MATCH_KEY_LENGTH, FodId::HASH_LENGTH);
     }
 
     public function testExposesOwidLevelFields(): void
@@ -332,7 +341,7 @@ class FodIdTest extends TestCase
         $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
-        $this->assertSame(FodId::HASH_LENGTH, strlen($fod->getMatchKey()));
+        $this->assertSame(FodId::MATCH_KEY_LENGTH, strlen($fod->getMatchKey()));
     }
 
     public function testLongDomainAndLongContextSectionAreRead(): void
@@ -431,7 +440,7 @@ class FodIdTest extends TestCase
 
     public function testReservedHeaderOnlyParses(): void
     {
-        $payload = chr(0b1100_0000) . str_repeat("\x00", FodId::HASH_OFFSET - 1);
+        $payload = chr(0b1100_0000) . str_repeat("\x00", FodId::MATCH_KEY_OFFSET - 1);
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(IdType::Reserved, $fod->getType());
         $this->assertSame(0, strlen($fod->getMatchKey()));

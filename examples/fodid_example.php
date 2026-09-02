@@ -51,7 +51,7 @@ const DOMAIN = '51degrees.com';
 function samplePayload(): string
 {
     $matchKey = '';
-    for ($i = 0; $i < FodId::HASH_LENGTH; $i++) {
+    for ($i = 0; $i < FodId::MATCH_KEY_LENGTH; $i++) {
         $matchKey .= chr(0x20 + $i);
     }
     return chr(0x00) . pack('V', 0x12345678) . $matchKey;
