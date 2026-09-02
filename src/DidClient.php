@@ -245,7 +245,7 @@ final class DidClient
         $isRandom = IdType::fromFlags(ord($payload[FodId::FLAGS_OFFSET]))
             === IdType::Random;
         $baseLength = FodId::HEADER_LENGTH
-            + ($isRandom ? FodId::GUID_LENGTH : FodId::HASH_LENGTH);
+            + ($isRandom ? FodId::GUID_LENGTH : FodId::MATCH_KEY_LENGTH);
         if (strlen($payload) < $baseLength) {
             return false;
         }

@@ -89,11 +89,11 @@ final class FodId
     /** Byte length of the License Id field. */
     public const LICENSE_ID_LENGTH = 4;
     /** Byte offset of the match key field within the payload. */
-    public const HASH_OFFSET = 5;
+    public const MATCH_KEY_OFFSET = 5;
     /** Byte length of the match key field (SHA-256). */
-    public const HASH_LENGTH = 32;
+    public const MATCH_KEY_LENGTH = 32;
     /** Byte length of the header (Flags + License Id) common to every type. */
-    public const HEADER_LENGTH = self::HASH_OFFSET;
+    public const HEADER_LENGTH = self::MATCH_KEY_OFFSET;
     /** Byte length of the GUID match key carried by Random identifiers. */
     public const GUID_LENGTH = 16;
     /** Minimum byte length of a Random 51Did payload. */
@@ -103,7 +103,27 @@ final class FodId
      * (Flags + License Id + match key). Random payloads are shorter, see
      * {@see FodId::RANDOM_PAYLOAD_LENGTH}.
      */
-    public const PAYLOAD_LENGTH = self::HASH_OFFSET + self::HASH_LENGTH;
+    public const PAYLOAD_LENGTH = self::MATCH_KEY_OFFSET
+        + self::MATCH_KEY_LENGTH;
+
+    /**
+     * Deprecated alias for {@see FodId::MATCH_KEY_OFFSET}. The stable,
+     * comparable part of a 51Did is now called the match key, mirroring the
+     * Model Terms for Marketing vocabulary. Holds the same value.
+     *
+     * @deprecated Renamed to {@see FodId::MATCH_KEY_OFFSET}. This alias will
+     *             be removed in a future release.
+     */
+    public const HASH_OFFSET = self::MATCH_KEY_OFFSET;
+    /**
+     * Deprecated alias for {@see FodId::MATCH_KEY_LENGTH}. The stable,
+     * comparable part of a 51Did is now called the match key, mirroring the
+     * Model Terms for Marketing vocabulary. Holds the same value.
+     *
+     * @deprecated Renamed to {@see FodId::MATCH_KEY_LENGTH}. This alias will
+     *             be removed in a future release.
+     */
+    public const HASH_LENGTH = self::MATCH_KEY_LENGTH;
 
     private Owid $owid;
     private int $flags;
@@ -332,7 +352,7 @@ final class FodId
         return [
             $flags,
             $licenseId,
-            substr($payload, self::HASH_OFFSET, $matchKeyLength),
+            substr($payload, self::MATCH_KEY_OFFSET, $matchKeyLength),
         ];
     }
 
@@ -348,7 +368,7 @@ final class FodId
         return match ($type) {
             IdType::Random => self::GUID_LENGTH,
             IdType::Reserved => $payloadLength - self::HEADER_LENGTH,
-            default => self::HASH_LENGTH,
+            default => self::MATCH_KEY_LENGTH,
         };
     }
 

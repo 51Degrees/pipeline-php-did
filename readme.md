@@ -121,8 +121,11 @@ $minutes  = $fodId->getDateMinutes(); // minutes since 2020-01-01T00:00:00Z
 `FodId::fromBase64()`, `FodId::fromByteArray()`, `FodId::fromOwid()` and the
 constructor remain and raise for the same inputs the `try` factories
 report, so code written against them keeps working. `getHash()` remains as
-a deprecated alias of `getMatchKey()` answering the same bytes, and will be
-removed in a future release.
+a deprecated alias of `getMatchKey()` answering the same bytes, and the
+constants `FodId::HASH_OFFSET` and `FodId::HASH_LENGTH` remain as
+deprecated aliases of `FodId::MATCH_KEY_OFFSET` and
+`FodId::MATCH_KEY_LENGTH` holding the same values. The method and both
+constant aliases will be removed in a future release.
 
 ## Reading versus verifying
 
