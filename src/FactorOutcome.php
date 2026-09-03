@@ -27,7 +27,8 @@ namespace fiftyone\pipeline\did;
 
 /**
  * The outcome of one creator context factor, mapped from the value under
- * that factor's name in the `factors` object the cloud sends on a mismatch.
+ * that factor's name in the `factors` object the cloud sends on a mismatch
+ * or on a partly misconfigured result.
  * Factor names are `transport`, `device`, `browserip`, `connectionip`,
  * `asn` and `browser`.
  */
@@ -35,6 +36,14 @@ enum FactorOutcome: string
 {
     case Verified = 'verified';
     case Mismatch = 'mismatch';
+
+    /**
+     * The service that checked the identifier is not configured to
+     * determine this factor, so it could not have checked it for any
+     * request. This is NOT a mismatch and must not be read as one, since
+     * the identifier says nothing about it either way.
+     */
+    case Misconfigured = 'misconfigured';
 
     /**
      * Maps the cloud's factor string, answering
