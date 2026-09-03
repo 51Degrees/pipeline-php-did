@@ -49,10 +49,35 @@ enum ContextOutcome: string
     case NoContext = 'nocontext';
 
     /**
-     * The context could not be judged, for example a section version the
-     * service does not implement.
+     * No longer sent by the service, and kept only because it has been
+     * public since this enum was added. What used to give this answer now
+     * gives {@see ContextOutcome::Misconfigured} where the service is at
+     * fault, or {@see ContextOutcome::InvalidDate} where the identifier
+     * could not have been created.
      */
     case NotCheckable = 'notcheckable';
+
+    /**
+     * The service that checked the identifier could not complete the check,
+     * and the reason is that service rather than the identifier. It either
+     * compared nothing, or compared some factors and reports at least one
+     * as {@see FactorOutcome::Misconfigured} in
+     * {@see RedeemResult::$factors}.
+     *
+     * Nothing a caller sends can produce this. Against 51Degrees public
+     * cloud it should not occur. Against a self-hosted service it means
+     * that service is not reading the client's own connection, or is
+     * missing an engine it needs, and its own logs name what to set.
+     */
+    case Misconfigured = 'misconfigured';
+
+    /**
+     * The identifier's creation date is one the scheme could not have
+     * produced, being in the future or before the creator context scheme
+     * began. It says the identifier is fabricated rather than that anything
+     * is wrong with the service.
+     */
+    case InvalidDate = 'invaliddate';
 
     /** The sealed result was redeemed outside the service's freshness window. */
     case Expired = 'expired';
