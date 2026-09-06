@@ -47,14 +47,22 @@ use SwanCommunity\Owid\Crypto;
 
 const DOMAIN = '51degrees.com';
 
-/** A canonical 37-byte Probabilistic payload. */
+/**
+ * A canonical 37-byte Probabilistic payload, being the 1 flags byte, the
+ * 4 licence id bytes and a 32-byte match key. The byte structure is
+ * specified at
+ * https://github.com/51Degrees/specifications/blob/main/did-specification/identifier-layout.md
+ */
 function samplePayload(): string
 {
     $matchKey = '';
-    for ($i = 0; $i < FodId::MATCH_KEY_LENGTH; $i++) {
+    for ($i = 0; $i < 32; $i++) {
         $matchKey .= chr(0x20 + $i);
     }
-    return chr(0x00) . pack('V', 0x12345678) . $matchKey;
+    // Bits 0 and 1 of the flags byte say the identifier was created for
+    // standard marketing, and bits 6 and 7 are zero for the Probabilistic
+    // type. Read them with getUsage() and getType(), never by masking.
+    return chr(0b0000_0011) . pack('V', 0x12345678) . $matchKey;
 }
 
 /**
@@ -81,7 +89,10 @@ $fodId = $result->fodId;
 echo "51Did read from base64 (status " . $result->status->value . "):\n";
 echo '  Domain    : ' . $fodId->getDomain() . "\n";
 echo '  Type      : ' . $fodId->getType()->name . "\n";
-echo '  Flags     : 0x' . dechex($fodId->getFlags()) . "\n";
+echo '  Usage     : ' . $fodId->getUsage()->name
+    . ' (id.usage ' . $fodId->getUsage()->idUsage() . ")\n";
+echo '  Consented : ' . ($fodId->isUsageFromConsent() ? 'true' : 'false')
+    . "\n";
 echo '  LicenseId : ' . $fodId->getLicenseId() . "\n";
 echo '  Match key : ' . bin2hex($fodId->getMatchKey()) . "\n";
 // Reading never verifies, so the signature is a separate question.

@@ -44,17 +44,18 @@ namespace fiftyone\pipeline\did;
 enum FodIdParseStatus: string
 {
     /**
-     * The payload holds fewer than the {@see FodId::HEADER_LENGTH} bytes of
-     * flags and licence id that every identifier type shares, so the type
-     * cannot even be read.
+     * The payload holds fewer than the
+     * {@see FodIdLayout::HEADER_LENGTH} bytes of flags and licence id that
+     * every identifier type shares, so the type cannot even be read.
      */
     case PayloadTooShort = 'PayloadTooShort';
 
     /**
      * The header was read and named a type whose match key the payload is
-     * too short to hold, being {@see FodId::GUID_LENGTH} bytes after the
-     * header for a Random identifier and {@see FodId::MATCH_KEY_LENGTH}
-     * bytes for a Probabilistic or HashedEmail one. A Reserved identifier
+     * too short to hold, being {@see FodIdLayout::GUID_LENGTH} bytes after
+     * the header for a Random identifier and
+     * {@see FodIdLayout::MATCH_KEY_LENGTH} bytes for a Probabilistic or
+     * HashedEmail one. A Reserved identifier
      * takes whatever follows the header, so it never reports this.
      */
     case InvalidTypePayloadLength = 'InvalidTypePayloadLength';
