@@ -27,7 +27,6 @@ namespace fiftyone\pipeline\did;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
-use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
 use SwanCommunity\Owid\ParseResult;
@@ -49,12 +48,22 @@ use SwanCommunity\Owid\Version;
  *
  * Payload layout. The header (offsets 0-4) is shared by every identifier
  * type, and bits 6-7 of Flags select the {@see IdType} and the length of the
- * match key that follows (32-byte SHA-256 for Probabilistic and HashedEmail,
- * or 16 GUID bytes for Random). An identifier carrying a creator context has
- * a further section after the match key, which the reader keeps in the
- * payload and does not interpret. There is no upper bound on the payload
- * here, because the lengths of that section belong to the cloud and an older
- * reader has to keep accepting an identifier from a newer one.
+ * match key that follows. An identifier carrying a creator context has a
+ * further section after the match key, which the reader keeps in the payload
+ * and does not interpret. There is no upper bound on the payload here,
+ * because the lengths of that section belong to the cloud and an older
+ * reader has to keep accepting an identifier from a newer one. The byte
+ * structure is specified at
+ * https://github.com/51Degrees/specifications/blob/main/did-specification/identifier-layout.md
+ * which is the authority for it, and the surface every 51Did package offers
+ * is listed at
+ * https://github.com/51Degrees/specifications/blob/main/did-specification/package-surface.md
+ *
+ * Every field is read through a named accessor, being {@see FodId::getType()},
+ * {@see FodId::getUsage()}, {@see FodId::isUsageFromConsent()},
+ * {@see FodId::getLicenseId()} and {@see FodId::getMatchKey()}. The raw flags
+ * byte and the byte offsets are not offered, because reading the usage bits
+ * by hand gets the answer backwards, as {@see Usage} explains.
  *
  * Reading is two steps. The OWID library reads the envelope and this class
  * then reads the payload inside it. The `try` factories,
@@ -82,49 +91,6 @@ use SwanCommunity\Owid\Version;
  */
 final class FodId
 {
-    /** Byte offset of the Flags field within the payload. */
-    public const FLAGS_OFFSET = 0;
-    /** Byte offset of the License Id field within the payload. */
-    public const LICENSE_ID_OFFSET = 1;
-    /** Byte length of the License Id field. */
-    public const LICENSE_ID_LENGTH = 4;
-    /** Byte offset of the match key field within the payload. */
-    public const MATCH_KEY_OFFSET = 5;
-    /** Byte length of the match key field (SHA-256). */
-    public const MATCH_KEY_LENGTH = 32;
-    /** Byte length of the header (Flags + License Id) common to every type. */
-    public const HEADER_LENGTH = self::MATCH_KEY_OFFSET;
-    /** Byte length of the GUID match key carried by Random identifiers. */
-    public const GUID_LENGTH = 16;
-    /** Minimum byte length of a Random 51Did payload. */
-    public const RANDOM_PAYLOAD_LENGTH = self::HEADER_LENGTH + self::GUID_LENGTH;
-    /**
-     * Minimum byte length of a Probabilistic or HashedEmail 51Did payload
-     * (Flags + License Id + match key). Random payloads are shorter, see
-     * {@see FodId::RANDOM_PAYLOAD_LENGTH}.
-     */
-    public const PAYLOAD_LENGTH = self::MATCH_KEY_OFFSET
-        + self::MATCH_KEY_LENGTH;
-
-    /**
-     * Deprecated alias for {@see FodId::MATCH_KEY_OFFSET}. The stable,
-     * comparable part of a 51Did is now called the match key, mirroring the
-     * Model Terms for Marketing vocabulary. Holds the same value.
-     *
-     * @deprecated Renamed to {@see FodId::MATCH_KEY_OFFSET}. This alias will
-     *             be removed in a future release.
-     */
-    public const HASH_OFFSET = self::MATCH_KEY_OFFSET;
-    /**
-     * Deprecated alias for {@see FodId::MATCH_KEY_LENGTH}. The stable,
-     * comparable part of a 51Did is now called the match key, mirroring the
-     * Model Terms for Marketing vocabulary. Holds the same value.
-     *
-     * @deprecated Renamed to {@see FodId::MATCH_KEY_LENGTH}. This alias will
-     *             be removed in a future release.
-     */
-    public const HASH_LENGTH = self::MATCH_KEY_LENGTH;
-
     private Owid $owid;
     private int $flags;
     private int $licenseId;
@@ -331,15 +297,15 @@ final class FodId
     private static function readPayload(string $payload): array|FodIdParseStatus
     {
         $length = strlen($payload);
-        if ($length < self::HEADER_LENGTH) {
+        if ($length < FodIdLayout::HEADER_LENGTH) {
             return FodIdParseStatus::PayloadTooShort;
         }
-        $flags = ord($payload[self::FLAGS_OFFSET]);
+        $flags = ord($payload[FodIdLayout::FLAGS_OFFSET]);
         $matchKeyLength = self::matchKeyLength(
             IdType::fromFlags($flags),
             $length
         );
-        if ($length < self::HEADER_LENGTH + $matchKeyLength) {
+        if ($length < FodIdLayout::HEADER_LENGTH + $matchKeyLength) {
             return FodIdParseStatus::InvalidTypePayloadLength;
         }
         // Little-endian unsigned 32-bit. 'V' yields a non-negative int on
@@ -347,12 +313,16 @@ final class FodId
         // becomes negative.
         $licenseId = unpack(
             'V',
-            substr($payload, self::LICENSE_ID_OFFSET, self::LICENSE_ID_LENGTH)
+            substr(
+                $payload,
+                FodIdLayout::LICENSE_ID_OFFSET,
+                FodIdLayout::LICENSE_ID_LENGTH
+            )
         )[1];
         return [
             $flags,
             $licenseId,
-            substr($payload, self::MATCH_KEY_OFFSET, $matchKeyLength),
+            substr($payload, FodIdLayout::MATCH_KEY_OFFSET, $matchKeyLength),
         ];
     }
 
@@ -366,9 +336,9 @@ final class FodId
         int $payloadLength
     ): int {
         return match ($type) {
-            IdType::Random => self::GUID_LENGTH,
-            IdType::Reserved => $payloadLength - self::HEADER_LENGTH,
-            default => self::MATCH_KEY_LENGTH,
+            IdType::Random => FodIdLayout::GUID_LENGTH,
+            IdType::Reserved => $payloadLength - FodIdLayout::HEADER_LENGTH,
+            default => FodIdLayout::MATCH_KEY_LENGTH,
         };
     }
 
@@ -385,37 +355,31 @@ final class FodId
             return sprintf(
                 '51Did payload must be at least %d bytes and %d were given '
                 . '(%s).',
-                self::HEADER_LENGTH,
+                FodIdLayout::HEADER_LENGTH,
                 $length,
                 $status->value
             );
         }
-        $type = IdType::fromFlags(ord($payload[self::FLAGS_OFFSET]));
+        $type = IdType::fromFlags(ord($payload[FodIdLayout::FLAGS_OFFSET]));
         return sprintf(
             '51Did payload for the %s type must be at least %d bytes and %d '
             . 'were given (%s).',
             $type->name,
-            self::HEADER_LENGTH + self::matchKeyLength($type, $length),
+            FodIdLayout::HEADER_LENGTH + self::matchKeyLength($type, $length),
             $length,
             $status->value
         );
     }
 
-    /** The 1-byte usage flags bit-mask from the payload (0-255). */
-    public function getFlags(): int
-    {
-        return $this->flags;
-    }
-
-    /** The identifier type carried in bits 6-7 of {@see FodId::getFlags()}. */
+    /** The identifier type carried in bits 6-7 of the flags byte. */
     public function getType(): IdType
     {
         return IdType::fromFlags($this->flags);
     }
 
     /**
-     * The usage carried in bits 0-2 of {@see FodId::getFlags()}, as the
-     * highest usage granted. See {@see Usage} for why it is read that way.
+     * The usage carried in bits 0-2 of the flags byte, as the highest
+     * usage granted. See {@see Usage} for why it is read that way.
      */
     public function getUsage(): Usage
     {
@@ -424,9 +388,9 @@ final class FodId
 
     /**
      * Whether the usage was derived from an IAB consent string the caller
-     * sent, rather than stated by the caller directly. Bit 3 of
-     * {@see FodId::getFlags()}. Both are legitimate ways to arrive at a
-     * usage, and this says nothing about which usage it is.
+     * sent, rather than stated by the caller directly. Bit 3 of the flags
+     * byte. Both are legitimate ways to arrive at a usage, and this says
+     * nothing about which usage it is.
      */
     public function isUsageFromConsent(): bool
     {
@@ -459,19 +423,6 @@ final class FodId
         return $this->matchKey;
     }
 
-    /**
-     * Deprecated alias for {@see FodId::getMatchKey()}. The stable,
-     * comparable part of a 51Did is now called the match key, mirroring the
-     * Model Terms for Marketing vocabulary. Returns the same bytes.
-     *
-     * @deprecated Renamed to {@see FodId::getMatchKey()}. This alias will be
-     *             removed in a future release.
-     */
-    public function getHash(): string
-    {
-        return $this->getMatchKey();
-    }
-
     /** The OWID version. */
     public function getVersion(): Version
     {
@@ -488,20 +439,6 @@ final class FodId
     public function getDate(): DateTimeImmutable
     {
         return $this->owid->date;
-    }
-
-    /**
-     * The envelope's own date as the unsigned 32-bit count of minutes since
-     * 2020-01-01T00:00:00Z, which is how the wire form carries it. This is
-     * the value the OWID `public-key?date=` parameter takes, and the integer
-     * to use when comparing creation times.
-     */
-    public function getDateMinutes(): int
-    {
-        return intdiv(
-            $this->owid->date->getTimestamp() - Io::BASE_TIMESTAMP,
-            60
-        );
     }
 
     /** The OWID payload bytes. */

@@ -26,8 +26,9 @@ declare(strict_types=1);
 namespace fiftyone\pipeline\did;
 
 /**
- * The usage a 51Did was created for, carried in bits 0-2 of
- * {@see FodId::getFlags()}. It decides where the identifier may go: one
+ * The usage a 51Did was created for, carried in bits 0-2 of the flags
+ * byte and read with {@see FodId::getUsage()}. It decides where the
+ * identifier may go: one
  * created for {@see Usage::NonMarketing} must never be passed to a demand
  * source, and one created for {@see Usage::Standard} or
  * {@see Usage::Personalized} may be passed only to a recipient that has

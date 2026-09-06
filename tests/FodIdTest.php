@@ -27,6 +27,7 @@ namespace fiftyone\pipeline\did\tests;
 
 use DateTimeImmutable;
 use fiftyone\pipeline\did\FodId;
+use fiftyone\pipeline\did\FodIdLayout;
 use fiftyone\pipeline\did\FodIdParseResult;
 use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\IdType;
@@ -62,11 +63,21 @@ class FodIdTest extends TestCase
 
     // ----- Helpers -----
 
+    /**
+     * The flags byte from the payload. There is no accessor for it, as
+     * every bit has a named accessor, so a test that needs the exact byte
+     * reads it where it sits.
+     */
+    private static function flagsOf(FodId $fod): int
+    {
+        return ord($fod->getPayload()[FodIdLayout::FLAGS_OFFSET]);
+    }
+
     /** The canonical 32 byte match key, bytes 0x20 to 0x3F. */
     private static function canonicalMatchKey(): string
     {
         $matchKey = '';
-        for ($i = 0; $i < FodId::MATCH_KEY_LENGTH; $i++) {
+        for ($i = 0; $i < FodIdLayout::MATCH_KEY_LENGTH; $i++) {
             $matchKey .= chr(0x20 + $i);
         }
         return $matchKey;
@@ -82,7 +93,7 @@ class FodIdTest extends TestCase
     private static function canonicalGuid(): string
     {
         $guid = '';
-        for ($i = 0; $i < FodId::GUID_LENGTH; $i++) {
+        for ($i = 0; $i < FodIdLayout::GUID_LENGTH; $i++) {
             $guid .= chr(0x40 + $i);
         }
         return $guid;
@@ -154,26 +165,17 @@ class FodIdTest extends TestCase
     public function testConstantsAreInternallyConsistent(): void
     {
         $this->assertSame(
-            FodId::PAYLOAD_LENGTH,
-            FodId::MATCH_KEY_OFFSET + FodId::MATCH_KEY_LENGTH
+            FodIdLayout::PAYLOAD_LENGTH,
+            FodIdLayout::MATCH_KEY_OFFSET + FodIdLayout::MATCH_KEY_LENGTH
         );
         $this->assertSame(
-            FodId::MATCH_KEY_OFFSET,
-            FodId::LICENSE_ID_OFFSET + FodId::LICENSE_ID_LENGTH
+            FodIdLayout::MATCH_KEY_OFFSET,
+            FodIdLayout::LICENSE_ID_OFFSET + FodIdLayout::LICENSE_ID_LENGTH
         );
         $this->assertSame(
-            FodId::RANDOM_PAYLOAD_LENGTH,
-            FodId::MATCH_KEY_OFFSET + FodId::GUID_LENGTH
+            FodIdLayout::RANDOM_PAYLOAD_LENGTH,
+            FodIdLayout::MATCH_KEY_OFFSET + FodIdLayout::GUID_LENGTH
         );
-    }
-
-    public function testDeprecatedConstantAliasesHoldTheSameValues(): void
-    {
-        // HASH_OFFSET and HASH_LENGTH stay as deprecated aliases so callers
-        // written against the old names keep working, and they hold the same
-        // values as the match key constants.
-        $this->assertSame(FodId::MATCH_KEY_OFFSET, FodId::HASH_OFFSET);
-        $this->assertSame(FodId::MATCH_KEY_LENGTH, FodId::HASH_LENGTH);
     }
 
     public function testExposesOwidLevelFields(): void
@@ -187,7 +189,7 @@ class FodIdTest extends TestCase
     public function testFromBase64UnpacksAllThreeFields(): void
     {
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame(self::TEST_DOMAIN, $fod->getDomain());
@@ -197,7 +199,7 @@ class FodIdTest extends TestCase
     {
         $buffer = $this->signedOwid(self::canonicalPayload())->asByteArray();
         $fod = FodId::fromByteArray($buffer);
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame(self::TEST_DOMAIN, $fod->getDomain());
@@ -207,7 +209,7 @@ class FodIdTest extends TestCase
     {
         $owid = $this->signedOwid(self::canonicalPayload());
         $fod = FodId::fromOwid($owid);
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame($owid->domain, $fod->getDomain());
@@ -222,7 +224,7 @@ class FodIdTest extends TestCase
         // The public constructor is the same read as fromOwid.
         $owid = $this->signedOwid(self::canonicalPayload());
         $fod = new FodId($owid);
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame($owid->asByteArray(), $fod->asByteArray());
@@ -238,10 +240,10 @@ class FodIdTest extends TestCase
     public function testLicenseIdIsLittleEndian(): void
     {
         $payload = self::canonicalPayload();
-        $payload[FodId::LICENSE_ID_OFFSET] = "\x01";
-        $payload[FodId::LICENSE_ID_OFFSET + 1] = "\x00";
-        $payload[FodId::LICENSE_ID_OFFSET + 2] = "\x00";
-        $payload[FodId::LICENSE_ID_OFFSET + 3] = "\x00";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET] = "\x01";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET + 1] = "\x00";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET + 2] = "\x00";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET + 3] = "\x00";
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(1, $fod->getLicenseId());
     }
@@ -250,7 +252,7 @@ class FodIdTest extends TestCase
     {
         $payload = self::canonicalPayload();
         for ($i = 0; $i < 4; $i++) {
-            $payload[FodId::LICENSE_ID_OFFSET + $i] = "\xFF";
+            $payload[FodIdLayout::LICENSE_ID_OFFSET + $i] = "\xFF";
         }
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(4294967295, $fod->getLicenseId());
@@ -259,28 +261,34 @@ class FodIdTest extends TestCase
     public function testLicenseIdHighBitStaysUnsigned(): void
     {
         $payload = self::canonicalPayload();
-        $payload[FodId::LICENSE_ID_OFFSET] = "\x00";
-        $payload[FodId::LICENSE_ID_OFFSET + 1] = "\x00";
-        $payload[FodId::LICENSE_ID_OFFSET + 2] = "\x00";
-        $payload[FodId::LICENSE_ID_OFFSET + 3] = "\x80";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET] = "\x00";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET + 1] = "\x00";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET + 2] = "\x00";
+        $payload[FodIdLayout::LICENSE_ID_OFFSET + 3] = "\x80";
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(0x80000000, $fod->getLicenseId());
     }
 
-    public function testFlagsZeroValueExposed(): void
+    public function testFlagsByteWithNoBitsSetIsRead(): void
     {
         $payload = self::canonicalPayload();
-        $payload[FodId::FLAGS_OFFSET] = "\x00";
+        $payload[FodIdLayout::FLAGS_OFFSET] = "\x00";
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
-        $this->assertSame(0, $fod->getFlags());
+        $this->assertSame(0, self::flagsOf($fod));
+        $this->assertSame(Usage::None, $fod->getUsage());
+        $this->assertFalse($fod->isUsageFromConsent());
+        $this->assertSame(IdType::Probabilistic, $fod->getType());
     }
 
-    public function testFlagsAllBitsSetExposed(): void
+    public function testFlagsByteWithEveryBitSetIsRead(): void
     {
         $payload = self::canonicalPayload();
-        $payload[FodId::FLAGS_OFFSET] = "\xFF";
+        $payload[FodIdLayout::FLAGS_OFFSET] = "\xFF";
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
-        $this->assertSame(255, $fod->getFlags());
+        $this->assertSame(255, self::flagsOf($fod));
+        $this->assertSame(Usage::Personalized, $fod->getUsage());
+        $this->assertTrue($fod->isUsageFromConsent());
+        $this->assertSame(IdType::Reserved, $fod->getType());
     }
 
     public function testMatchKeyIsImmutable(): void
@@ -291,19 +299,9 @@ class FodIdTest extends TestCase
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
     }
 
-    public function testDeprecatedGetHashReturnsTheMatchKey(): void
-    {
-        // getHash() stays as a deprecated alias so callers written against
-        // the old name keep working, and it answers the same bytes as
-        // getMatchKey().
-        $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
-        $this->assertSame($fod->getMatchKey(), $fod->getHash());
-        $this->assertSame(self::canonicalMatchKey(), $fod->getHash());
-    }
-
     public function testPayloadOneByteShortThrows(): void
     {
-        $base64 = $this->signedOwidBase64(str_repeat("\x00", FodId::PAYLOAD_LENGTH - 1));
+        $base64 = $this->signedOwidBase64(str_repeat("\x00", FodIdLayout::PAYLOAD_LENGTH - 1));
         $this->expectException(InvalidArgumentException::class);
         FodId::fromBase64($base64);
     }
@@ -339,10 +337,10 @@ class FodIdTest extends TestCase
     {
         $payload = self::canonicalPayload() . str_repeat("\xCC", 27); // 64 bytes
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
-        $this->assertSame(FodId::MATCH_KEY_LENGTH, strlen($fod->getMatchKey()));
+        $this->assertSame(FodIdLayout::MATCH_KEY_LENGTH, strlen($fod->getMatchKey()));
     }
 
     public function testLongDomainAndLongContextSectionAreRead(): void
@@ -378,7 +376,7 @@ class FodIdTest extends TestCase
     {
         $fod1 = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
         $fod2 = FodId::fromBase64($fod1->asBase64());
-        $this->assertSame($fod1->getFlags(), $fod2->getFlags());
+        $this->assertSame(self::flagsOf($fod1), self::flagsOf($fod2));
         $this->assertSame($fod1->getLicenseId(), $fod2->getLicenseId());
         $this->assertSame($fod1->getMatchKey(), $fod2->getMatchKey());
         $this->assertSame($fod1->getDomain(), $fod2->getDomain());
@@ -396,7 +394,7 @@ class FodIdTest extends TestCase
     private function typeFor(int $flags): IdType
     {
         $payload = self::canonicalPayload();
-        $payload[FodId::FLAGS_OFFSET] = chr($flags);
+        $payload[FodIdLayout::FLAGS_OFFSET] = chr($flags);
         return FodId::fromBase64($this->signedOwidBase64($payload))->getType();
     }
 
@@ -416,7 +414,7 @@ class FodIdTest extends TestCase
         ];
         foreach ($cases as [$bits, $expected, $idUsage]) {
             $payload = self::canonicalRandomPayload();
-            $payload[FodId::FLAGS_OFFSET] = chr((1 << 6) | $bits);
+            $payload[FodIdLayout::FLAGS_OFFSET] = chr((1 << 6) | $bits);
             $fod = FodId::fromBase64($this->signedOwidBase64($payload));
             $this->assertSame($expected, $fod->getUsage(), 'usage bits ' . decbin($bits));
             $this->assertSame($idUsage, $fod->getUsage()->idUsage());
@@ -428,7 +426,7 @@ class FodIdTest extends TestCase
     public function testUsageFromConsentIsBitThree(): void
     {
         $payload = self::canonicalRandomPayload();
-        $payload[FodId::FLAGS_OFFSET] = chr((1 << 6) | 0b1011);
+        $payload[FodIdLayout::FLAGS_OFFSET] = chr((1 << 6) | 0b1011);
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertTrue($fod->isUsageFromConsent());
         $this->assertSame(Usage::Standard, $fod->getUsage());
@@ -444,13 +442,13 @@ class FodIdTest extends TestCase
     {
         $fod = FodId::fromBase64($this->signedOwidBase64(self::canonicalRandomPayload()));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
-        $this->assertSame(FodId::GUID_LENGTH, strlen($fod->getMatchKey()));
+        $this->assertSame(FodIdLayout::GUID_LENGTH, strlen($fod->getMatchKey()));
         $this->assertSame(self::canonicalGuid(), $fod->getMatchKey());
     }
 
     public function testRandomPayloadOneByteShortThrows(): void
     {
-        $payload = substr(self::canonicalRandomPayload(), 0, FodId::RANDOM_PAYLOAD_LENGTH - 1);
+        $payload = substr(self::canonicalRandomPayload(), 0, FodIdLayout::RANDOM_PAYLOAD_LENGTH - 1);
         $base64 = $this->signedOwidBase64($payload);
         $this->expectException(InvalidArgumentException::class);
         FodId::fromBase64($base64);
@@ -459,15 +457,15 @@ class FodIdTest extends TestCase
     public function testRandomPayloadLargerThanSpecUsesFirst16ValueBytes(): void
     {
         $payload = self::canonicalRandomPayload()
-            . str_repeat("\xCC", FodId::PAYLOAD_LENGTH - FodId::RANDOM_PAYLOAD_LENGTH);
+            . str_repeat("\xCC", FodIdLayout::PAYLOAD_LENGTH - FodIdLayout::RANDOM_PAYLOAD_LENGTH);
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(IdType::Random, $fod->getType());
-        $this->assertSame(FodId::GUID_LENGTH, strlen($fod->getMatchKey()));
+        $this->assertSame(FodIdLayout::GUID_LENGTH, strlen($fod->getMatchKey()));
     }
 
     public function testHashedEmailPayloadOneByteShortThrows(): void
     {
-        $payload = substr(self::canonicalPayload(), 0, FodId::PAYLOAD_LENGTH - 1);
+        $payload = substr(self::canonicalPayload(), 0, FodIdLayout::PAYLOAD_LENGTH - 1);
         $base64 = $this->signedOwidBase64($payload);
         $this->expectException(InvalidArgumentException::class);
         FodId::fromBase64($base64);
@@ -475,7 +473,7 @@ class FodIdTest extends TestCase
 
     public function testReservedHeaderOnlyParses(): void
     {
-        $payload = chr(0b1100_0000) . str_repeat("\x00", FodId::MATCH_KEY_OFFSET - 1);
+        $payload = chr(0b1100_0000) . str_repeat("\x00", FodIdLayout::MATCH_KEY_OFFSET - 1);
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(IdType::Reserved, $fod->getType());
         $this->assertSame(0, strlen($fod->getMatchKey()));
@@ -519,7 +517,7 @@ class FodIdTest extends TestCase
         $raw = $this->signedOwid(self::canonicalPayload())->asByteArray();
         $raw[strlen($raw) - 1] = $raw[strlen($raw) - 1] ^ "\xFF"; // corrupt sig
         $fod = FodId::fromByteArray($raw);
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertFalse($fod->verify($this->publicPem));
@@ -540,13 +538,13 @@ class FodIdTest extends TestCase
     {
         $fod1 = FodId::fromBase64($this->signedOwidBase64(self::canonicalPayload()));
         $fod2 = FodId::fromByteArray($fod1->asByteArray());
-        $this->assertSame($fod1->getFlags(), $fod2->getFlags());
+        $this->assertSame(self::flagsOf($fod1), self::flagsOf($fod2));
         $this->assertSame($fod1->getLicenseId(), $fod2->getLicenseId());
         $this->assertSame($fod1->getMatchKey(), $fod2->getMatchKey());
         $this->assertSame($fod1->getDomain(), $fod2->getDomain());
     }
 
-    // ----- Both base64 alphabets, asBase64Url and getDateMinutes -----
+    // ----- Both base64 alphabets, asBase64Url and the date -----
 
     /**
      * A signed envelope whose standard base64 form contains at least one
@@ -631,14 +629,21 @@ class FodIdTest extends TestCase
         $this->assertSame($standard, $again->asBase64());
     }
 
-    public function testDateMinutesEqualsTheEnvelopeDateField(): void
+    public function testDateEqualsTheEnvelopeDateField(): void
     {
+        // The wire form carries the date as the count of minutes since the
+        // base date, and getDate() is that count read back as a date. The
+        // raw count has no accessor, so the bytes are checked here against
+        // the date the reader answers with.
         $minutes = 3456789;
         $date = new DateTimeImmutable('@' . (Io::BASE_TIMESTAMP + $minutes * 60));
         $fod = FodId::fromOwid($this->signedOwidAt($date, self::canonicalPayload()));
-        $this->assertSame($minutes, $fod->getDateMinutes());
-        // The wire form carries the same value little-endian after the
-        // version byte and the null-terminated domain.
+        $this->assertSame(
+            Io::BASE_TIMESTAMP + $minutes * 60,
+            $fod->getDate()->getTimestamp()
+        );
+        // The count sits little-endian after the version byte and the
+        // null-terminated domain.
         $offset = 1 + strlen(self::TEST_DOMAIN) + 1;
         $this->assertSame(
             $minutes,
@@ -646,11 +651,16 @@ class FodIdTest extends TestCase
         );
     }
 
-    public function testDateMinutesIsZeroAtTheBaseDate(): void
+    public function testDateIsTheBaseDateWhenTheEncodedCountIsZero(): void
     {
         $date = new DateTimeImmutable('@' . Io::BASE_TIMESTAMP);
         $fod = FodId::fromOwid($this->signedOwidAt($date, self::canonicalPayload()));
-        $this->assertSame(0, $fod->getDateMinutes());
+        $this->assertSame(Io::BASE_TIMESTAMP, $fod->getDate()->getTimestamp());
+        $offset = 1 + strlen(self::TEST_DOMAIN) + 1;
+        $this->assertSame(
+            0,
+            unpack('V', substr($fod->asByteArray(), $offset, 4))[1]
+        );
     }
 
     public function testContextSectionIsKeptInThePayload(): void
@@ -663,7 +673,7 @@ class FodIdTest extends TestCase
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame($payload, $fod->getPayload());
-        $this->assertSame($section, substr($fod->getPayload(), FodId::PAYLOAD_LENGTH));
+        $this->assertSame($section, substr($fod->getPayload(), FodIdLayout::PAYLOAD_LENGTH));
     }
 
     // ----- Reading without raising (runbook Phase 5) -----
@@ -672,7 +682,7 @@ class FodIdTest extends TestCase
     {
         $owid = $this->signedOwid(self::canonicalPayload());
         $fod = $this->assertParsed(FodId::tryFromBase64($owid->asBase64()));
-        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_FLAGS, self::flagsOf($fod));
         $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame(IdType::HashedEmail, $fod->getType());
@@ -734,7 +744,7 @@ class FodIdTest extends TestCase
                 $this->assertSame($payload, $fod->getPayload());
                 $this->assertSame(
                     $section,
-                    substr($fod->getPayload(), FodId::HEADER_LENGTH + strlen($fod->getMatchKey()))
+                    substr($fod->getPayload(), FodIdLayout::HEADER_LENGTH + strlen($fod->getMatchKey()))
                 );
             }
         }
@@ -750,7 +760,7 @@ class FodIdTest extends TestCase
                 $this->signedOwidBase64($payload)
             ));
             $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
-            $this->assertSame(FodId::PAYLOAD_LENGTH + $extra, strlen($fod->getPayload()));
+            $this->assertSame(FodIdLayout::PAYLOAD_LENGTH + $extra, strlen($fod->getPayload()));
         }
     }
 
@@ -758,8 +768,8 @@ class FodIdTest extends TestCase
     {
         $random = self::canonicalRandomPayload();
         foreach ([
-            FodId::HEADER_LENGTH,               // header only, no match key
-            FodId::RANDOM_PAYLOAD_LENGTH - 1,   // one byte short of the GUID
+            FodIdLayout::HEADER_LENGTH,               // header only, no match key
+            FodIdLayout::RANDOM_PAYLOAD_LENGTH - 1,   // one byte short of the GUID
         ] as $length) {
             $owid = $this->signedOwid(substr($random, 0, $length));
             foreach ([
@@ -782,11 +792,11 @@ class FodIdTest extends TestCase
         // the wrong type.
         foreach ([0b0000_0101, 0b1000_0101] as $flags) {
             $payload = self::canonicalPayload();
-            $payload[FodId::FLAGS_OFFSET] = chr($flags);
+            $payload[FodIdLayout::FLAGS_OFFSET] = chr($flags);
             foreach ([
-                FodId::HEADER_LENGTH,
-                FodId::RANDOM_PAYLOAD_LENGTH,
-                FodId::PAYLOAD_LENGTH - 1,
+                FodIdLayout::HEADER_LENGTH,
+                FodIdLayout::RANDOM_PAYLOAD_LENGTH,
+                FodIdLayout::PAYLOAD_LENGTH - 1,
             ] as $length) {
                 $owid = $this->signedOwid(substr($payload, 0, $length));
                 foreach ([
@@ -807,7 +817,7 @@ class FodIdTest extends TestCase
     {
         // Every length under the header, including no payload at all, is
         // the same answer, because the type cannot be read to say more.
-        for ($length = 0; $length < FodId::HEADER_LENGTH; $length++) {
+        for ($length = 0; $length < FodIdLayout::HEADER_LENGTH; $length++) {
             $owid = $this->signedOwid(substr(self::canonicalPayload(), 0, $length));
             foreach ([
                 FodId::tryFromBase64($owid->asBase64()),
@@ -937,8 +947,8 @@ class FodIdTest extends TestCase
     public function testTheThrowingSurfaceStillThrowsTheDocumentedTypes(): void
     {
         $raw = $this->signedOwid(self::canonicalPayload())->asByteArray();
-        $shortSha256 = $this->signedOwid(substr(self::canonicalPayload(), 0, FodId::PAYLOAD_LENGTH - 1));
-        $shortRandom = $this->signedOwid(substr(self::canonicalRandomPayload(), 0, FodId::HEADER_LENGTH));
+        $shortSha256 = $this->signedOwid(substr(self::canonicalPayload(), 0, FodIdLayout::PAYLOAD_LENGTH - 1));
+        $shortRandom = $this->signedOwid(substr(self::canonicalRandomPayload(), 0, FodIdLayout::HEADER_LENGTH));
         $noHeader = $this->signedOwid("\xA5\x01");
 
         // The envelope could not be read, so the OWID exception, naming
