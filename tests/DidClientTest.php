@@ -530,17 +530,21 @@ class DidClientTest extends TestCase
     public function testNoCandidateBeforeTheSchedule(): void
     {
         $this->queueJson(200, $this->schedule());
-        // The refetch for a date nothing covers.
-        $this->queueJson(200, $this->schedule());
         $client = $this->client();
+        // Primed, so the date nothing covers causes the one refetch the
+        // rule allows, which the request count below pins.
+        $client->publicKeys();
+        $this->queueJson(200, $this->schedule());
         $tolerance = self::tolerance();
         // Far enough before the first key that the tolerance does not
         // reach the date, so nothing in the schedule can have signed it.
         $before = self::shift(self::at(self::T0), -($tolerance + 3600));
         $fodId = $this->signedAt($before, $this->keyA);
         $this->assertFalse($client->verifySignature($fodId));
+        $this->assertCount(2, $this->requests);
         $this->queueJson(200, $this->schedule());
         $this->assertNull($client->publicKeyFor($fodId));
+        $this->assertCount(3, $this->requests);
     }
 
     // ----- Offline verification -----
@@ -1143,9 +1147,9 @@ class DidClientTest extends TestCase
     public function testDetailedNoKeyForDateBeforeTheSchedule(): void
     {
         $this->queueJson(200, $this->schedule());
-        // The refetch for a date nothing covers.
-        $this->queueJson(200, $this->schedule());
         $client = $this->client();
+        $client->publicKeys();
+        $this->queueJson(200, $this->schedule());
         $before = self::shift(
             self::at(self::T0), -(self::tolerance() + 3600)
         );
@@ -1155,6 +1159,7 @@ class DidClientTest extends TestCase
                 $this->signedAt($before, $this->keyA)
             )
         );
+        $this->assertCount(2, $this->requests);
     }
 
     // A date nothing covers must never be reported as forged, because
@@ -1163,8 +1168,9 @@ class DidClientTest extends TestCase
     public function testNoKeyForDateIsNotReportedAsInvalid(): void
     {
         $this->queueJson(200, $this->schedule());
-        $this->queueJson(200, $this->schedule());
         $client = $this->client();
+        $client->publicKeys();
+        $this->queueJson(200, $this->schedule());
         $before = self::shift(
             self::at(self::T0), -(self::tolerance() + 3600)
         );
@@ -1173,6 +1179,22 @@ class DidClientTest extends TestCase
         );
         $this->assertNotSame(SignatureCheck::Invalid, $outcome);
         $this->assertSame(SignatureCheck::NoKeyForDate, $outcome);
+        $this->assertCount(2, $this->requests);
+    }
+
+    // An endpoint that publishes no keys at all is the other way to have
+    // no key for the date, and it is not a forgery either.
+    public function testDetailedNoKeyForDateWhenNothingIsPublished(): void
+    {
+        $this->queueJson(200, []);
+        $this->queueJson(200, []);
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $this->assertSame(
+            SignatureCheck::NoKeyForDate,
+            $this->client()->verifySignatureDetailed(
+                $this->signedAt($inside, $this->keyB)
+            )
+        );
     }
 
     // verifySignature is true for exactly the Verified outcome and false
