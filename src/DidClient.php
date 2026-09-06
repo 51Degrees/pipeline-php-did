@@ -171,6 +171,16 @@ final class DidClient
     }
 
     /**
+     * Whether the client was given a licence key. A licence key is
+     * needed only by {@see DidClient::redeem()}, so a client without
+     * one still reads keys and verifies signatures.
+     */
+    public function hasLicenceKey(): bool
+    {
+        return $this->licenceKey !== null;
+    }
+
+    /**
      * The signing public keys the cloud publishes, fetched on first use and
      * then answered from the cache. Keys are published up to three months
      * ahead of their start, so the list holds entries that are not yet in
@@ -225,8 +235,10 @@ final class DidClient
      *    Every earlier key is never tried, because one leaked key from any
      *    past period could then sign identifiers dated today.
      * 4. No candidate, meaning the date precedes the whole schedule,
-     *    answers false. {@see DidClient::publicKeyFor()} returning null says
-     *    which case that was.
+     *    answers false. {@see DidClient::verifySignatureDetailed()}
+     *    says which of the five cases it was, and
+     *    {@see DidClient::publicKeyFor()} returning null says the same
+     *    for this one case.
      *
      * @throws CloudException when the key endpoint answers other than 200.
      * @throws RuntimeException when the cloud cannot be reached.
@@ -235,28 +247,61 @@ final class DidClient
      */
     public function verifySignature(FodId $fodId): bool
     {
+        return $this->verifySignatureDetailed($fodId)
+            === SignatureCheck::Verified;
+    }
+
+    /**
+     * The same check as {@see DidClient::verifySignature()}, answering
+     * which of the five things happened rather than only whether the
+     * identifier is genuine.
+     *
+     * Only {@see SignatureCheck::Verified} says the signature was
+     * examined against a key and matched, and only
+     * {@see SignatureCheck::Invalid} says it was examined and did not.
+     * The other three say the check never happened, because the
+     * envelope version is not one this package issues, or the payload
+     * is too short to hold a complete identifier, or the published
+     * schedule covers no key for the identifier's date. A caller that
+     * treats those three as forged reports its own outage as an
+     * attack, which is why they are told apart here.
+     *
+     * The outcome names are the same in every 51Did package, so they
+     * can be logged or carried between services.
+     *
+     * @throws CloudException when the key endpoint answers other than 200.
+     * @throws RuntimeException when the cloud cannot be reached.
+     * @throws \SwanCommunity\Owid\OwidException when a published key is
+     *     not a valid public key.
+     */
+    public function verifySignatureDetailed(FodId $fodId): SignatureCheck
+    {
         if ($fodId->getVersion() !== Version::Version3) {
-            return false;
+            return SignatureCheck::UnsupportedVersion;
         }
         $payload = $fodId->getPayload();
         if (strlen($payload) < FodId::HEADER_LENGTH) {
-            return false;
+            return SignatureCheck::InvalidLength;
         }
         $isRandom = IdType::fromFlags(ord($payload[FodId::FLAGS_OFFSET]))
             === IdType::Random;
         $baseLength = FodId::HEADER_LENGTH
             + ($isRandom ? FodId::GUID_LENGTH : FodId::MATCH_KEY_LENGTH);
         if (strlen($payload) < $baseLength) {
-            return false;
+            return SignatureCheck::InvalidLength;
         }
         $at = $fodId->getDate();
         $keys = $this->keysCovering($at);
-        foreach (self::candidatesFor($keys, $at) as $key) {
+        $candidates = self::candidatesFor($keys, $at);
+        if ($candidates === []) {
+            return SignatureCheck::NoKeyForDate;
+        }
+        foreach ($candidates as $key) {
             if ($fodId->verify($key->pem)) {
-                return true;
+                return SignatureCheck::Verified;
             }
         }
-        return false;
+        return SignatureCheck::Invalid;
     }
 
     /**

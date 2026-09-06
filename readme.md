@@ -281,6 +281,15 @@ $fodId = $read->fodId;
 $genuine = $client->verifySignature($fodId);
 $key = $client->publicKeyFor($fodId);   // null when no key covers the date
 
+//    verifySignatureDetailed() answers which of the five things happened
+//    rather than only whether the identifier is genuine. Only Verified
+//    says a key matched, and only Invalid says a key was tried and did
+//    not. The other three say the check never ran, so treating them as
+//    forged would report your own outage as an attack.
+$outcome = $client->verifySignatureDetailed($fodId);
+//    SignatureCheck::Verified | Invalid | NoKeyForDate
+//                  | UnsupportedVersion | InvalidLength
+
 // 3. Verify the signature through the cloud (one use, no licence key).
 $valid = $client->verify($fodId);
 
