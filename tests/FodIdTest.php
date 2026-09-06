@@ -30,6 +30,7 @@ use fiftyone\pipeline\did\FodId;
 use fiftyone\pipeline\did\FodIdParseResult;
 use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\IdType;
+use fiftyone\pipeline\did\Usage;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Creator;
@@ -397,6 +398,40 @@ class FodIdTest extends TestCase
         $payload = self::canonicalPayload();
         $payload[FodId::FLAGS_OFFSET] = chr($flags);
         return FodId::fromBase64($this->signedOwidBase64($payload))->getType();
+    }
+
+    /**
+     * The usage is the highest granted, because the bits are cumulative.
+     * A mask for the non-marketing bit alone would say yes for every
+     * marketing identifier, which is the wrong answer for a data
+     * protection decision.
+     */
+    public function testUsageIsTheHighestGranted(): void
+    {
+        $cases = [
+            [0b000, Usage::None, null],
+            [0b001, Usage::NonMarketing, 'non-marketing'],
+            [0b011, Usage::Standard, 'standard'],
+            [0b111, Usage::Personalized, 'personalized'],
+        ];
+        foreach ($cases as [$bits, $expected, $idUsage]) {
+            $payload = self::canonicalRandomPayload();
+            $payload[FodId::FLAGS_OFFSET] = chr((1 << 6) | $bits);
+            $fod = FodId::fromBase64($this->signedOwidBase64($payload));
+            $this->assertSame($expected, $fod->getUsage(), 'usage bits ' . decbin($bits));
+            $this->assertSame($idUsage, $fod->getUsage()->idUsage());
+            $this->assertSame(IdType::Random, $fod->getType());
+            $this->assertFalse($fod->isUsageFromConsent());
+        }
+    }
+
+    public function testUsageFromConsentIsBitThree(): void
+    {
+        $payload = self::canonicalRandomPayload();
+        $payload[FodId::FLAGS_OFFSET] = chr((1 << 6) | 0b1011);
+        $fod = FodId::fromBase64($this->signedOwidBase64($payload));
+        $this->assertTrue($fod->isUsageFromConsent());
+        $this->assertSame(Usage::Standard, $fod->getUsage());
     }
 
     public function testTypeRandomWhenBits01(): void

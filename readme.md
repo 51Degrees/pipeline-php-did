@@ -106,6 +106,8 @@ $fodId = $result->fodId;
 
 $flags     = $fodId->getFlags();
 $type      = $fodId->getType();        // IdType::Probabilistic / Random / HashedEmail
+$usage     = $fodId->getUsage();       // Usage::NonMarketing / Standard / Personalized, the highest granted
+$usage->idUsage();                     // 'non-marketing' / 'standard' / 'personalized', the cloud's id.usage value
 $licenseId = $fodId->getLicenseId();
 $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
 

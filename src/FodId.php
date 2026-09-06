@@ -414,6 +414,26 @@ final class FodId
     }
 
     /**
+     * The usage carried in bits 0-2 of {@see FodId::getFlags()}, as the
+     * highest usage granted. See {@see Usage} for why it is read that way.
+     */
+    public function getUsage(): Usage
+    {
+        return Usage::fromFlags($this->flags);
+    }
+
+    /**
+     * Whether the usage was derived from an IAB consent string the caller
+     * sent, rather than stated by the caller directly. Bit 3 of
+     * {@see FodId::getFlags()}. Both are legitimate ways to arrive at a
+     * usage, and this says nothing about which usage it is.
+     */
+    public function isUsageFromConsent(): bool
+    {
+        return ($this->flags & 0b1000) !== 0;
+    }
+
+    /**
      * The 4-byte little-endian License Id field (0 to 4294967295).
      *
      * On an identifier carrying a creator context the four bytes at offset
