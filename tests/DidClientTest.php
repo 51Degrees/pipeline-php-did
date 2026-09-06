@@ -34,6 +34,7 @@ use fiftyone\pipeline\did\FactorOutcome;
 use fiftyone\pipeline\did\FodId;
 use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\NotSupportedException;
+use fiftyone\pipeline\did\SignatureCheck;
 use fiftyone\pipeline\did\SignatureOutcome;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
@@ -1076,5 +1077,134 @@ class DidClientTest extends TestCase
         );
         $this->expectException(RuntimeException::class);
         $client->redeem($this->someId(), 'SEALED', 'C');
+    }
+
+    // ----- Detailed offline verification -----
+
+    // The five outcomes of verifySignatureDetailed, which say which of
+    // the things verifySignature collapses into false actually happened.
+    // The .NET, Java and Python packages report the same five.
+
+    public function testDetailedVerifiedWithTheKeyInForce(): void
+    {
+        $this->queueJson(200, $this->schedule());
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $this->assertSame(
+            SignatureCheck::Verified,
+            $this->client()->verifySignatureDetailed(
+                $this->signedAt($inside, $this->keyB)
+            )
+        );
+    }
+
+    public function testDetailedInvalidWithTheWrongKey(): void
+    {
+        $this->queueJson(200, $this->schedule());
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $this->assertSame(
+            SignatureCheck::Invalid,
+            $this->client()->verifySignatureDetailed(
+                $this->signedAt($inside, $this->keyC)
+            )
+        );
+    }
+
+    public function testDetailedUnsupportedVersionForVersion2(): void
+    {
+        $this->queueJson(200, $this->schedule());
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        $fodId = $this->signedAt(
+            $inside, $this->keyB, null, Version::Version2
+        );
+        $this->assertSame(
+            SignatureCheck::UnsupportedVersion,
+            $this->client()->verifySignatureDetailed($fodId)
+        );
+        // Refused before any key is fetched, as verifySignature is.
+        $this->assertCount(0, $this->requests);
+    }
+
+    public function testDetailedInvalidLengthForShortPayload(): void
+    {
+        $this->queueJson(200, $this->schedule());
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        // A Reserved type header-only payload parses as a FodId but is
+        // shorter than the base for a 32 byte match key.
+        $payload = chr(0b1100_0000)
+            . str_repeat("\x00", FodId::HEADER_LENGTH - 1);
+        $fodId = $this->signedAt($inside, $this->keyB, $payload);
+        $this->assertSame(
+            SignatureCheck::InvalidLength,
+            $this->client()->verifySignatureDetailed($fodId)
+        );
+        $this->assertCount(0, $this->requests);
+    }
+
+    public function testDetailedNoKeyForDateBeforeTheSchedule(): void
+    {
+        $this->queueJson(200, $this->schedule());
+        // The refetch for a date nothing covers.
+        $this->queueJson(200, $this->schedule());
+        $client = $this->client();
+        $before = self::shift(
+            self::at(self::T0), -(self::tolerance() + 3600)
+        );
+        $this->assertSame(
+            SignatureCheck::NoKeyForDate,
+            $client->verifySignatureDetailed(
+                $this->signedAt($before, $this->keyA)
+            )
+        );
+    }
+
+    // A date nothing covers must never be reported as forged, because
+    // the signature was not examined at all. This is the distinction
+    // verifySignature cannot express, and the reason this method exists.
+    public function testNoKeyForDateIsNotReportedAsInvalid(): void
+    {
+        $this->queueJson(200, $this->schedule());
+        $this->queueJson(200, $this->schedule());
+        $client = $this->client();
+        $before = self::shift(
+            self::at(self::T0), -(self::tolerance() + 3600)
+        );
+        $outcome = $client->verifySignatureDetailed(
+            $this->signedAt($before, $this->keyA)
+        );
+        $this->assertNotSame(SignatureCheck::Invalid, $outcome);
+        $this->assertSame(SignatureCheck::NoKeyForDate, $outcome);
+    }
+
+    // verifySignature is true for exactly the Verified outcome and false
+    // for every other, so the two can never disagree.
+    public function testVerifySignatureAgreesWithTheDetailedOutcome(): void
+    {
+        $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
+        foreach ([$this->keyB, $this->keyC] as $key) {
+            $this->queueJson(200, $this->schedule());
+            $client = $this->client();
+            $fodId = $this->signedAt($inside, $key);
+            $outcome = $client->verifySignatureDetailed($fodId);
+            $this->assertSame(
+                $outcome === SignatureCheck::Verified,
+                $client->verifySignature($fodId)
+            );
+        }
+    }
+
+    // Every case is distinct, so a caller can tell them apart, and the
+    // backing string is the cross language name of the outcome.
+    public function testTheFiveOutcomesAreDistinct(): void
+    {
+        $cases = SignatureCheck::cases();
+        $this->assertCount(5, $cases);
+        $values = array_map(
+            static fn (SignatureCheck $c): string => $c->value,
+            $cases
+        );
+        $this->assertSame($values, array_unique($values));
+        foreach ($cases as $case) {
+            $this->assertSame($case->name, $case->value);
+        }
     }
 }
