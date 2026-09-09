@@ -555,6 +555,60 @@ class FodIdTest extends TestCase
         }
     }
 
+    public function testEveryCaseAgreesWithTheTermsTable(): void
+    {
+        // Each case is backed by its own index and the table is keyed by
+        // that value, so this fails if a case does not read back from its
+        // own index, or if a case that names a document was added without
+        // an address.
+        foreach (Terms::cases() as $case) {
+            if ($case === Terms::Unknown) {
+                // Stands for every index the table does not carry, so it
+                // has no index of its own and no address.
+                $this->assertSame(-1, $case->value);
+                $this->assertNull($case->url());
+                continue;
+            }
+            $this->assertSame(
+                $case,
+                Terms::fromIndex($case->value),
+                $case->name . ' does not read back from its own index'
+            );
+            if ($case === Terms::NotStated) {
+                // Names no document, so it has no address.
+                $this->assertSame(0, $case->value);
+                $this->assertNull($case->url());
+            } else {
+                $this->assertNotNull(
+                    $case->url(),
+                    $case->name . ' names a document with no address'
+                );
+                $this->assertStringStartsWith('https://', $case->url());
+            }
+        }
+    }
+
+    public function testEveryIndexOutsideTheTableIsUnknown(): void
+    {
+        $known = [];
+        foreach (Terms::cases() as $case) {
+            if ($case->value >= 0) {
+                $known[] = $case->value;
+            }
+        }
+        for ($index = 0; $index <= 255; $index++) {
+            if (in_array($index, $known, true)) {
+                continue;
+            }
+            $this->assertSame(
+                Terms::Unknown,
+                Terms::fromIndex($index),
+                'index ' . $index
+            );
+            $this->assertNull(Terms::fromIndex($index)->url());
+        }
+    }
+
     public function testTermsIndexOneIsTheModelTermsForMarketing(): void
     {
         foreach (self::bothMatchKeyLengths() as $name => $payload) {

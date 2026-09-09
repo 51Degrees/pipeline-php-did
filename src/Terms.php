@@ -43,9 +43,16 @@ namespace fiftyone\pipeline\did;
  * both, as the usage says where an identifier may go whilst this says
  * under which document it was created.
  *
- * Unlike {@see IdType} this enum carries no backing value, because
+ * Each case is backed by the Terms index the payload carries, and
+ * {@see Terms::$ADDRESSES} maps a case to its address, so the whole of the
+ * definition of which index is which document is in this one file. A new
+ * terms document is one new case and one new row, and nothing else in the
+ * package changes.
+ *
  * {@see Terms::Unknown} stands for every index this release does not name
- * and so has no single index of its own.
+ * and so has no index of its own, which is why it is backed by -1. A Terms
+ * index read from a payload is one byte, so it is 0 to 255 and can never be
+ * negative, and that is what makes -1 safe as the value not in the table.
  *
  * This enum is not part of the published surface. The package turns the
  * index into the address that {@see FodId::getTerms()} answers with, so a
@@ -55,7 +62,7 @@ namespace fiftyone\pipeline\did;
  *
  * @internal
  */
-enum Terms
+enum Terms: int
 {
     /**
      * The terms are not stated in the identifier, being an index of zero
@@ -72,10 +79,10 @@ enum Terms
      * Model Terms govern marketing use, and such an identifier is barred
      * from a demand source by its usage rather than by its terms.
      */
-    case NotStated;
+    case NotStated = 0;
 
     /** Index 1, the Model Terms for Marketing version 2. */
-    case ModelTermsForMarketing2;
+    case ModelTermsForMarketing2 = 1;
 
     /**
      * An index added after this release, so terms are stated that this
@@ -88,18 +95,28 @@ enum Terms
      * address from an index it does not know, and the index itself is not
      * published.
      */
-    case Unknown;
+    case Unknown = -1;
 
     /**
-     * The address of the Model Terms for Marketing version 2. The exact
-     * version is named here rather than a landing page, because a receiver
-     * has to know the document in force when the identifier was made and
-     * an address whose contents can be edited cannot prove that. A later
-     * version is a new index and a new release, which is the cost of a
-     * receiver being able to trust what it reads.
+     * The terms table from the specification, which is the whole of the
+     * definition of which index is which document. It is published at
+     * https://github.com/51Degrees/specifications/blob/main/did-specification/identifier-layout.md#terms
+     * and this is the only place in the package that carries it.
+     *
+     * One row per terms document, keyed by the case's own index so the
+     * number is written once. {@see Terms::NotStated} and
+     * {@see Terms::Unknown} have no row, because neither names a document,
+     * and a lookup that finds no row is the answer for both.
+     *
+     * Each address names an exact version rather than a landing page,
+     * because a receiver has to know the document in force when the
+     * identifier was made and an address whose contents can be edited
+     * cannot prove that. A later version is a new index and a new release,
+     * which is the cost of a receiver being able to trust what it reads.
      */
-    private const MODEL_TERMS_FOR_MARKETING_2_URL
-        = 'https://m4ow.uk/mtm/2.txt';
+    private const ADDRESSES = [
+        self::ModelTermsForMarketing2->value => 'https://m4ow.uk/mtm/2.txt',
+    ];
 
     /**
      * Names the terms an index stands for, answering {@see Terms::Unknown}
@@ -109,11 +126,7 @@ enum Terms
      */
     public static function fromIndex(int $index): self
     {
-        return match ($index) {
-            0 => self::NotStated,
-            1 => self::ModelTermsForMarketing2,
-            default => self::Unknown,
-        };
+        return self::tryFrom($index) ?? self::Unknown;
     }
 
     /**
@@ -123,11 +136,6 @@ enum Terms
      */
     public function url(): ?string
     {
-        return match ($this) {
-            self::NotStated => null,
-            self::ModelTermsForMarketing2
-                => self::MODEL_TERMS_FOR_MARKETING_2_URL,
-            self::Unknown => null,
-        };
+        return self::ADDRESSES[$this->value] ?? null;
     }
 }
