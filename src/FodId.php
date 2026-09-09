@@ -57,9 +57,9 @@ use SwanCommunity\Owid\Version;
  * the payload here, because the lengths of that section belong to the cloud
  * and an older reader has to keep accepting an identifier from a newer one.
  *
- * An identifier issued before the Terms byte existed ends at the match key,
- * and such a payload reads as {@see Terms::NotStated}, so nothing has to
- * tell an absent byte from a zero one and no presence flag exists.
+ * A payload that ends at the match key carries no Terms byte, and such a
+ * payload reads as {@see Terms::NotStated}, so nothing has to tell an
+ * absent byte from a zero one and no presence flag exists.
  *
  * Reading is two steps. The OWID library reads the envelope and this class
  * then reads the payload inside it. The `try` factories,
@@ -337,11 +337,10 @@ final class FodId
      * the terms index, and anything after that is a creator context section
      * and is left in the payload unread.
      *
-     * The terms index is the only field that may be absent, because an
-     * identifier issued before the byte existed ends at the match key. A
-     * payload with no byte there reads as zero, which is the same answer as
-     * a byte holding zero, so a shorter payload is not a failure and the
-     * length rules are unchanged.
+     * The terms index is the only field that may be absent, because a
+     * payload may end at the match key. A payload with no byte there reads
+     * as zero, which is the same answer as a byte holding zero, so a
+     * shorter payload is not a failure and no length rule turns on it.
      *
      * @return array{int, int, string, int}|FodIdParseStatus the flags, the
      *     licence id, the match key bytes and the terms index, or the reason
@@ -368,13 +367,13 @@ final class FodId
             'V',
             substr($payload, self::LICENSE_ID_OFFSET, self::LICENSE_ID_LENGTH)
         )[1];
-        // The terms index is the byte after the match key. A payload with
-        // no byte there reads as zero, which is the answer an identifier
-        // issued before the byte existed has to give. A Reserved identifier
-        // always reads as zero too, and that is correct rather than a
-        // defect, because the match key length for that type is not
-        // defined, so every byte after the header is the match key and none
-        // is left for a package to find the terms in.
+        // The terms index is the byte after the match key, so where it
+        // sits follows the match key length the type selects. A payload
+        // with no byte there reads as zero. A Reserved identifier always
+        // reads as zero too, and that is correct rather than a defect,
+        // because the match key length for that type is not defined, so
+        // every byte after the header is the match key and none is left
+        // for a package to find the terms in.
         $termsOffset = self::HEADER_LENGTH + $matchKeyLength;
         return [
             $flags,
@@ -492,10 +491,10 @@ final class FodId
 
     /**
      * The raw terms index (0 to 255), zero where the identifier does not
-     * state its terms or was issued before the byte existed. It is offered
-     * because this package will meet an index added after it was released,
-     * and a caller then needs to be able to say which index it could not
-     * read and to look the document up by hand. Where
+     * state its terms and where its payload ends at the match key. It is
+     * offered because this package will meet an index added after it was
+     * released, and a caller then needs to be able to say which index it
+     * could not read and to look the document up by hand. Where
      * {@see FodId::getTerms()} names the terms, use that instead.
      */
     public function getTermsIndex(): int

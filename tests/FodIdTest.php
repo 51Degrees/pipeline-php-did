@@ -479,9 +479,8 @@ class FodIdTest extends TestCase
 
     public function testPayloadEndingAtTheMatchKeyStatesNoTerms(): void
     {
-        // An identifier issued before the terms byte existed ends at the
-        // match key, and it must keep reading exactly as it did, answering
-        // an index of zero.
+        // A payload ending at the match key carries no terms byte, so
+        // there is nothing there to read and it answers an index of zero.
         foreach (self::bothMatchKeyLengths() as $name => $payload) {
             $fod = $this->readSigned($payload);
             $this->assertSame(Terms::NotStated, $fod->getTerms(), $name);

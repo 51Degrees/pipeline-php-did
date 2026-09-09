@@ -50,8 +50,8 @@ const DOMAIN = '51degrees.com';
 /**
  * A canonical 38-byte Probabilistic payload, being the header, the match
  * key and the terms byte. Index 1 is the Model Terms for Marketing version
- * 2. An identifier issued before the terms byte existed ends at the match
- * key and reads as Terms::NotStated instead.
+ * 2. A payload that ends at the match key carries no terms byte and
+ * reads as Terms::NotStated instead.
  */
 function samplePayload(): string
 {

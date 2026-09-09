@@ -53,7 +53,7 @@ enum Terms
 {
     /**
      * The terms are not stated in the identifier, being an index of zero
-     * or an identifier issued before the byte existed. This does not mean
+     * or a payload that ends at the match key. This does not mean
      * the identifier is unrestricted, only that the answer has to come
      * from somewhere else, being the Terms Document Locator in an OpenRTB
      * request or whatever the surrounding protocol provides. Carrying the

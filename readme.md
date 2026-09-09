@@ -61,10 +61,9 @@ identifier issued under it has to stay readable years later.
 |     1 | `ModelTermsForMarketing2` | `https://m4ow.uk/mtm/2.txt` |
 | other | `Unknown`                        | `null`                      |
 
-An identifier issued before the byte existed has a payload ending at the
-match key, and it reads as index 0, so absence and a byte holding zero mean
-the same thing and no presence flag exists. Nothing else about such an
-identifier changes.
+An identifier whose payload ends at the match key carries no Terms byte,
+and it reads as index 0, so absence and a byte holding zero mean the same
+thing and no presence flag exists.
 
 `Terms::NotStated` does not mean the identifier is unrestricted. It means
 only that this identifier does not carry the answer, so the answer has to
