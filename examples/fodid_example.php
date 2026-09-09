@@ -47,14 +47,19 @@ use SwanCommunity\Owid\Crypto;
 
 const DOMAIN = '51degrees.com';
 
-/** A canonical 37-byte Probabilistic payload. */
+/**
+ * A canonical 38-byte Probabilistic payload, being the header, the match
+ * key and the terms byte. Index 1 is the Model Terms for Marketing version
+ * 2. An identifier issued before the terms byte existed ends at the match
+ * key and reads as Terms::NotStated instead.
+ */
 function samplePayload(): string
 {
     $matchKey = '';
     for ($i = 0; $i < FodId::MATCH_KEY_LENGTH; $i++) {
         $matchKey .= chr(0x20 + $i);
     }
-    return chr(0x00) . pack('V', 0x12345678) . $matchKey;
+    return chr(0x00) . pack('V', 0x12345678) . $matchKey . chr(1);
 }
 
 /**
@@ -84,6 +89,12 @@ echo '  Type      : ' . $fodId->getType()->name . "\n";
 echo '  Flags     : 0x' . dechex($fodId->getFlags()) . "\n";
 echo '  LicenseId : ' . $fodId->getLicenseId() . "\n";
 echo '  Match key : ' . bin2hex($fodId->getMatchKey()) . "\n";
+// The terms the identifier was created under travel with it. The address
+// is returned and never fetched, and it is null where the terms are not
+// stated or the index is one this release cannot name.
+echo '  Terms     : ' . $fodId->getTerms()->name
+    . ' (index ' . $fodId->getTermsIndex() . ")\n";
+echo '  Terms URL : ' . ($fodId->getTermsUrl() ?? 'none') . "\n";
 // Reading never verifies, so the signature is a separate question.
 echo '  Verifies  : ' . ($fodId->verify($crypto->publicKeyPem()) ? 'true' : 'false') . "\n";
 echo '  Signature : ' . $fodId->signatureStatus($crypto->publicKeyPem())->value . "\n";

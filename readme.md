@@ -29,6 +29,7 @@ envelopes.**
 |      0 |      1 | Flags      | uint8: bits 0-2 usage, bits 6-7 identifier type |
 |      1 |      4 | LicenseId  | uint32 (little-endian)                          |
 |      5 |  16/32 | Match key  | SHA-256 (Probabilistic, HashedEmail) or GUID (Random) |
+| after match key | 1 | Terms | uint8: an index into the terms table, see below |
 
 | Bits 7-6 | `IdType`        | Match key length | Minimum payload |
 |---------:|-----------------|-----------------:|----------------:|
@@ -41,9 +42,52 @@ Identifiers issued before the type tag existed have bits 6-7 zeroed and decode
 as `Probabilistic`.
 
 The minimum payload is the only length rule this package applies. There is
-no upper bound here, because anything after the match key is a creator
+no upper bound here, because anything after the terms byte is a creator
 context section whose lengths belong to the cloud, and an older reader has
 to keep accepting an identifier a newer cloud issues.
+
+### Terms
+
+The terms byte says which terms document the identifier was created under,
+so the terms travel with the identifier rather than alongside it. It is an
+index into the table below and is **not** a version number, so that a later
+document can live at any address rather than only at one composed from a
+number. An index is never reused or repointed once published, because an
+identifier issued under it has to stay readable years later.
+
+| Index | `Terms`                          | `getTermsUrl()`             |
+|------:|----------------------------------|-----------------------------|
+|     0 | `NotStated`                      | `null`                      |
+|     1 | `ModelTermsForMarketing2` | `https://m4ow.uk/mtm/2.txt` |
+| other | `Unknown`                        | `null`                      |
+
+An identifier issued before the byte existed has a payload ending at the
+match key, and it reads as index 0, so absence and a byte holding zero mean
+the same thing and no presence flag exists. Nothing else about such an
+identifier changes.
+
+`Terms::NotStated` does not mean the identifier is unrestricted. It means
+only that this identifier does not carry the answer, so the answer has to
+come from the surrounding protocol, being the Terms Document Locator in an
+OpenRTB request or whatever else is provided. Carrying the terms here does
+not remove the need to carry that locator where a protocol has one, and
+where the two disagree, take the identifier's own value as the one that
+describes it, because it is inside the signature and the accompanying data
+is not.
+
+An index added after this release reads as `Terms::Unknown`, which is
+deliberately not `Terms::NotStated`. Zero says no terms are stated whilst an
+unknown index says terms are stated that this package cannot name, and
+reading the two as one would take an identifier created under terms for one
+created under none. `getTermsIndex()` says which index it was, so a caller
+can report it or look the document up by hand, and it should then treat the
+identifier as covered by terms it cannot yet read and either update the
+package or refuse the identifier. This package never fetches the address and
+never builds one from the index.
+
+The `Reserved` identifier type reads every byte after the header as the
+match key, so no byte is left to hold the terms and such an identifier
+answers `NotStated`.
 
 On an identifier carrying a creator context the four LicenseId bytes hold an
 encrypted value that only 51Degrees can turn back into a licence identifier,
@@ -108,6 +152,9 @@ $flags     = $fodId->getFlags();
 $type      = $fodId->getType();        // IdType::Probabilistic / Random / HashedEmail
 $licenseId = $fodId->getLicenseId();
 $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
+$terms     = $fodId->getTerms();       // Terms::NotStated / ModelTermsForMarketing2 / Unknown
+$termsIdx  = $fodId->getTermsIndex();  // the raw index, for one this release cannot name
+$termsUrl  = $fodId->getTermsUrl();    // the address, or null for NotStated and Unknown
 
 // Delegated OWID-level fields and operations. Reading never verifies.
 $domain   = $fodId->getDomain();

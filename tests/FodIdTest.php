@@ -30,6 +30,7 @@ use fiftyone\pipeline\did\FodId;
 use fiftyone\pipeline\did\FodIdParseResult;
 use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\IdType;
+use fiftyone\pipeline\did\Terms;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Creator;
@@ -450,6 +451,181 @@ class FodIdTest extends TestCase
             $this->signedOwidBase64($payload)
         ));
         $this->assertSame(IdType::Reserved, $read->getType());
+    }
+
+    // ----- Terms -----
+
+    /** The 51Did read back from a signed envelope over the payload given. */
+    private function readSigned(string $payload): FodId
+    {
+        return FodId::fromBase64($this->signedOwidBase64($payload));
+    }
+
+    /**
+     * A canonical payload for each match key length, being the 32 byte
+     * SHA-256 carried by the HashedEmail type and the 16 GUID bytes carried
+     * by Random, so that a test can prove the terms byte is read at the
+     * right offset for both rather than only for the longer one.
+     *
+     * @return array<string, string>
+     */
+    private static function bothMatchKeyLengths(): array
+    {
+        return [
+            '32 byte match key' => self::canonicalPayload(),
+            '16 byte match key' => self::canonicalRandomPayload(),
+        ];
+    }
+
+    public function testPayloadEndingAtTheMatchKeyStatesNoTerms(): void
+    {
+        // An identifier issued before the terms byte existed ends at the
+        // match key, and it must keep reading exactly as it did, answering
+        // an index of zero.
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $fod = $this->readSigned($payload);
+            $this->assertSame(Terms::NotStated, $fod->getTerms(), $name);
+            $this->assertSame(0, $fod->getTermsIndex(), $name);
+            $this->assertNull($fod->getTermsUrl(), $name);
+        }
+    }
+
+    public function testATermsByteOfZeroReadsTheSameAsNoByteAtAll(): void
+    {
+        // Absence and a byte holding zero mean the same thing, so nothing
+        // needs to tell them apart and no presence flag exists.
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $absent = $this->readSigned($payload);
+            $stated = $this->readSigned($payload . chr(0));
+            $this->assertSame(
+                $absent->getTerms(),
+                $stated->getTerms(),
+                $name
+            );
+            $this->assertSame(
+                $absent->getTermsIndex(),
+                $stated->getTermsIndex(),
+                $name
+            );
+            $this->assertNull($stated->getTermsUrl(), $name);
+        }
+    }
+
+    public function testTermsIndexOneIsTheModelTermsForMarketing(): void
+    {
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $fod = $this->readSigned($payload . chr(1));
+            $this->assertSame(
+                Terms::ModelTermsForMarketing2,
+                $fod->getTerms(),
+                $name
+            );
+            $this->assertSame(1, $fod->getTermsIndex(), $name);
+            // The exact versioned address, never a landing page, because a
+            // receiver has to know the document in force when the
+            // identifier was made.
+            $this->assertSame(
+                'https://m4ow.uk/mtm/2.txt',
+                $fod->getTermsUrl(),
+                $name
+            );
+        }
+    }
+
+    public function testUnknownIndexIsReportedAndHasNoAddress(): void
+    {
+        // The index is reported so that a caller meeting one added after
+        // this release can say which index it could not read.
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $fod = $this->readSigned($payload . chr(200));
+            $this->assertSame(Terms::Unknown, $fod->getTerms(), $name);
+            $this->assertSame(200, $fod->getTermsIndex(), $name);
+            $this->assertNull($fod->getTermsUrl(), $name);
+        }
+    }
+
+    public function testAnUnknownIndexIsNotTheSameAnswerAsNoTermsStated(): void
+    {
+        // Zero says no terms are stated whilst an unknown index says terms
+        // are stated that this package cannot name, and a receiver that
+        // read the two as one would take an identifier created under terms
+        // for one created under none.
+        $this->assertNotSame(Terms::NotStated, Terms::Unknown);
+        $payload = self::canonicalPayload();
+        $none = $this->readSigned($payload . chr(0));
+        $unknown = $this->readSigned($payload . chr(200));
+        $this->assertNotSame($none->getTerms(), $unknown->getTerms());
+        $this->assertNotSame(
+            $none->getTermsIndex(),
+            $unknown->getTermsIndex()
+        );
+        // Both answer with no address, so the address alone cannot tell
+        // them apart and only the named value and the index can.
+        $this->assertNull($none->getTermsUrl());
+        $this->assertNull($unknown->getTermsUrl());
+    }
+
+    public function testEveryIndexPastTheKnownOnesIsUnknown(): void
+    {
+        // Read straight from the named value, as signing 254 envelopes to
+        // make the same point would only be slower.
+        $this->assertSame(Terms::NotStated, Terms::fromIndex(0));
+        $this->assertSame(
+            Terms::ModelTermsForMarketing2,
+            Terms::fromIndex(1)
+        );
+        for ($index = 2; $index <= 255; $index++) {
+            $terms = Terms::fromIndex($index);
+            $this->assertSame(Terms::Unknown, $terms, "index $index");
+            $this->assertNull($terms->url(), "index $index");
+        }
+    }
+
+    public function testTermsIsReadBeforeACreatorContextSection(): void
+    {
+        // A creator context section follows the terms byte, so an
+        // identifier carrying one proves the byte is taken from the right
+        // offset rather than from the end of the payload.
+        $section = "\x00" . str_repeat("\xAB", 200);
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $whole = $payload . chr(1) . $section;
+            $fod = $this->readSigned($whole);
+            $this->assertSame(
+                Terms::ModelTermsForMarketing2,
+                $fod->getTerms(),
+                $name
+            );
+            $this->assertSame(1, $fod->getTermsIndex(), $name);
+            $this->assertSame(
+                'https://m4ow.uk/mtm/2.txt',
+                $fod->getTermsUrl(),
+                $name
+            );
+            // The match key is unchanged and the section is still kept in
+            // the payload unread.
+            $this->assertSame(
+                substr($payload, FodId::MATCH_KEY_OFFSET),
+                $fod->getMatchKey(),
+                $name
+            );
+            $this->assertSame($whole, $fod->getPayload(), $name);
+        }
+    }
+
+    public function testReservedTypeTakesEveryByteSoNoTermsAreStated(): void
+    {
+        // The Reserved type reads everything after the header as the match
+        // key, which is the existing best-effort reading of a type not yet
+        // assigned, so no byte is left over to hold the terms.
+        $payload = chr(0b1100_0000)
+            . pack('V', self::CANONICAL_LICENSE_ID)
+            . self::canonicalMatchKey()
+            . chr(1);
+        $fod = $this->readSigned($payload);
+        $this->assertSame(IdType::Reserved, $fod->getType());
+        $this->assertSame(Terms::NotStated, $fod->getTerms());
+        $this->assertSame(0, $fod->getTermsIndex());
+        $this->assertNull($fod->getTermsUrl());
     }
 
     // ----- Gap tests (runbook section 6b) -----

@@ -50,11 +50,16 @@ use SwanCommunity\Owid\Version;
  * Payload layout. The header (offsets 0-4) is shared by every identifier
  * type, and bits 6-7 of Flags select the {@see IdType} and the length of the
  * match key that follows (32-byte SHA-256 for Probabilistic and HashedEmail,
- * or 16 GUID bytes for Random). An identifier carrying a creator context has
- * a further section after the match key, which the reader keeps in the
- * payload and does not interpret. There is no upper bound on the payload
- * here, because the lengths of that section belong to the cloud and an older
- * reader has to keep accepting an identifier from a newer one.
+ * or 16 GUID bytes for Random). One byte after the match key holds the
+ * {@see Terms} the identifier was created under. An identifier carrying a
+ * creator context has a further section after that byte, which the reader
+ * keeps in the payload and does not interpret. There is no upper bound on
+ * the payload here, because the lengths of that section belong to the cloud
+ * and an older reader has to keep accepting an identifier from a newer one.
+ *
+ * An identifier issued before the Terms byte existed ends at the match key,
+ * and such a payload reads as {@see Terms::NotStated}, so nothing has to
+ * tell an absent byte from a zero one and no presence flag exists.
  *
  * Reading is two steps. The OWID library reads the envelope and this class
  * then reads the payload inside it. The `try` factories,
@@ -129,6 +134,7 @@ final class FodId
     private int $flags;
     private int $licenseId;
     private string $matchKey;
+    private int $termsIndex;
 
     /**
      * Promotes an already-read {@see Owid} into a 51Did by unpacking its
@@ -152,7 +158,12 @@ final class FodId
             );
         }
         $this->owid = $owid;
-        [$this->flags, $this->licenseId, $this->matchKey] = $read;
+        [
+            $this->flags,
+            $this->licenseId,
+            $this->matchKey,
+            $this->termsIndex,
+        ] = $read;
     }
 
     /**
@@ -322,11 +333,19 @@ final class FodId
      * The header must be present before the type can be read, and the type
      * then says how many match key bytes must follow. A Reserved identifier
      * takes whatever follows the header, which is the existing best-effort
-     * reading of a type not yet assigned. Anything after the match key is a
-     * creator context section and is left in the payload unread.
+     * reading of a type not yet assigned. One byte after the match key is
+     * the terms index, and anything after that is a creator context section
+     * and is left in the payload unread.
      *
-     * @return array{int, int, string}|FodIdParseStatus the flags, the licence
-     *     id and the match key bytes, or the reason the payload does not fit
+     * The terms index is the only field that may be absent, because an
+     * identifier issued before the byte existed ends at the match key. A
+     * payload with no byte there reads as zero, which is the same answer as
+     * a byte holding zero, so a shorter payload is not a failure and the
+     * length rules are unchanged.
+     *
+     * @return array{int, int, string, int}|FodIdParseStatus the flags, the
+     *     licence id, the match key bytes and the terms index, or the reason
+     *     the payload does not fit
      */
     private static function readPayload(string $payload): array|FodIdParseStatus
     {
@@ -349,10 +368,19 @@ final class FodId
             'V',
             substr($payload, self::LICENSE_ID_OFFSET, self::LICENSE_ID_LENGTH)
         )[1];
+        // The terms index is the byte after the match key. A payload with
+        // no byte there reads as zero, which is the answer an identifier
+        // issued before the byte existed has to give. A Reserved identifier
+        // always reads as zero too, and that is correct rather than a
+        // defect, because the match key length for that type is not
+        // defined, so every byte after the header is the match key and none
+        // is left for a package to find the terms in.
+        $termsOffset = self::HEADER_LENGTH + $matchKeyLength;
         return [
             $flags,
             $licenseId,
             substr($payload, self::MATCH_KEY_OFFSET, $matchKeyLength),
+            $length > $termsOffset ? ord($payload[$termsOffset]) : 0,
         ];
     }
 
@@ -450,6 +478,41 @@ final class FodId
     public function getHash(): string
     {
         return $this->getMatchKey();
+    }
+
+    /**
+     * The terms document this identifier was created under, read from the
+     * byte after the match key. See {@see Terms} for what each answer means
+     * and why {@see Terms::NotStated} does not mean unrestricted.
+     */
+    public function getTerms(): Terms
+    {
+        return Terms::fromIndex($this->termsIndex);
+    }
+
+    /**
+     * The raw terms index (0 to 255), zero where the identifier does not
+     * state its terms or was issued before the byte existed. It is offered
+     * because this package will meet an index added after it was released,
+     * and a caller then needs to be able to say which index it could not
+     * read and to look the document up by hand. Where
+     * {@see FodId::getTerms()} names the terms, use that instead.
+     */
+    public function getTermsIndex(): int
+    {
+        return $this->termsIndex;
+    }
+
+    /**
+     * The address of the terms document, or null where there is none to
+     * give, being an identifier that does not state its terms and one
+     * stating an index this package does not know. This package never
+     * fetches the address and never builds one from the index, so the
+     * caller decides what to do with it.
+     */
+    public function getTermsUrl(): ?string
+    {
+        return $this->getTerms()->url();
     }
 
     /** The OWID version. */
