@@ -58,8 +58,17 @@ use SwanCommunity\Owid\Version;
  * and an older reader has to keep accepting an identifier from a newer one.
  *
  * A payload that ends at the match key carries no Terms byte, and such a
- * payload reads as {@see Terms::NotStated}, so nothing has to tell an
- * absent byte from a zero one and no presence flag exists.
+ * payload reads as a Terms of zero, so nothing has to tell an absent byte
+ * from a zero one and no presence flag exists.
+ *
+ * Bits 4 and 5 of the flags byte say which payload layout the identifier
+ * follows, and this package reads version 0. A payload naming any other
+ * version is refused with
+ * {@see FodIdParseStatus::UnsupportedPayloadVersion} rather than read under
+ * the layout this package knows, because a later version exists precisely
+ * because a field moved, so reading one here would answer with values that
+ * are wrong rather than absent. The version is not exposed, because a
+ * caller has nothing to decide with it.
  *
  * Reading is two steps. The OWID library reads the envelope and this class
  * then reads the payload inside it. The `try` factories,
@@ -110,6 +119,13 @@ final class FodId
      */
     public const PAYLOAD_LENGTH = self::MATCH_KEY_OFFSET
         + self::MATCH_KEY_LENGTH;
+
+    /**
+     * The payload layout version this package reads, carried in bits 4 and
+     * 5 of the flags byte. Any other version is refused rather than read
+     * under this layout.
+     */
+    private const SUPPORTED_PAYLOAD_VERSION = 0;
 
     /**
      * Deprecated alias for {@see FodId::MATCH_KEY_OFFSET}. The stable,
@@ -353,6 +369,15 @@ final class FodId
             return FodIdParseStatus::PayloadTooShort;
         }
         $flags = ord($payload[self::FLAGS_OFFSET]);
+        // The version is read before any field, because a later version
+        // exists precisely because a field moved. Reading a payload of a
+        // version this package does not know under the layout it does know
+        // would answer with values that are wrong rather than absent,
+        // which is worse than refusing, and a version that nothing checks
+        // protects nothing.
+        if (self::payloadVersion($flags) !== self::SUPPORTED_PAYLOAD_VERSION) {
+            return FodIdParseStatus::UnsupportedPayloadVersion;
+        }
         $matchKeyLength = self::matchKeyLength(
             IdType::fromFlags($flags),
             $length
@@ -400,6 +425,17 @@ final class FodId
     }
 
     /**
+     * Bits 4 and 5 of the flags byte, being the version of the payload
+     * layout the identifier follows. The envelope carries a version of its
+     * own at its first byte, which versions the envelope, whilst this one
+     * versions the payload.
+     */
+    private static function payloadVersion(int $flags): int
+    {
+        return ($flags >> 4) & 0b11;
+    }
+
+    /**
      * The message for the exception the raising surfaces carry when a
      * payload does not fit, naming the status and the byte counts.
      */
@@ -408,6 +444,14 @@ final class FodId
         string $payload
     ): string {
         $length = strlen($payload);
+        if ($status === FodIdParseStatus::UnsupportedPayloadVersion) {
+            return sprintf(
+                '51Did payload version %d is not one this package can read '
+                . '(%s).',
+                self::payloadVersion(ord($payload[self::FLAGS_OFFSET])),
+                $status->value
+            );
+        }
         if ($status === FodIdParseStatus::PayloadTooShort) {
             return sprintf(
                 '51Did payload must be at least %d bytes and %d were given '
@@ -480,38 +524,30 @@ final class FodId
     }
 
     /**
-     * The terms document this identifier was created under, read from the
-     * byte after the match key. See {@see Terms} for what each answer means
-     * and why {@see Terms::NotStated} does not mean unrestricted.
+     * The address of the terms document this identifier was created under,
+     * read from the byte after the match key, or null where the identifier
+     * names no document this package knows.
+     *
+     * The byte is an index into a table in the specification and this
+     * package turns the index into the address, so a caller never handles
+     * the byte. The address is answered and never fetched, so what to do
+     * with the document is the caller's decision.
+     *
+     * Null covers both an index of zero, which says the terms are not
+     * stated in the identifier, and an index added to the table after this
+     * package was released, which it cannot name. A caller cannot tell
+     * those two apart, which is deliberate, because both lead to the same
+     * place, being that the identifier does not say which terms it was
+     * created under and the answer has to come from somewhere else. No
+     * address is ever built from an index, since that would name a
+     * document nobody wrote.
+     *
+     * No address does not mean the identifier is unrestricted. Where an
+     * identifier may go is a separate question the usage answers.
      */
-    public function getTerms(): Terms
+    public function getTerms(): ?string
     {
-        return Terms::fromIndex($this->termsIndex);
-    }
-
-    /**
-     * The raw terms index (0 to 255), zero where the identifier does not
-     * state its terms and where its payload ends at the match key. It is
-     * offered because this package will meet an index added after it was
-     * released, and a caller then needs to be able to say which index it
-     * could not read and to look the document up by hand. Where
-     * {@see FodId::getTerms()} names the terms, use that instead.
-     */
-    public function getTermsIndex(): int
-    {
-        return $this->termsIndex;
-    }
-
-    /**
-     * The address of the terms document, or null where there is none to
-     * give, being an identifier that does not state its terms and one
-     * stating an index this package does not know. This package never
-     * fetches the address and never builds one from the index, so the
-     * caller decides what to do with it.
-     */
-    public function getTermsUrl(): ?string
-    {
-        return $this->getTerms()->url();
+        return Terms::fromIndex($this->termsIndex)->url();
     }
 
     /** The OWID version. */

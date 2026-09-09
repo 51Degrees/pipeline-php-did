@@ -45,9 +45,15 @@ namespace fiftyone\pipeline\did;
  *
  * Unlike {@see IdType} this enum carries no backing value, because
  * {@see Terms::Unknown} stands for every index this release does not name
- * and so has no single index of its own. The index itself is read with
- * {@see FodId::getTermsIndex()}, which is the one raw value a 51Did
- * package offers.
+ * and so has no single index of its own.
+ *
+ * This enum is not part of the published surface. The package turns the
+ * index into the address that {@see FodId::getTerms()} answers with, so a
+ * caller never handles the byte, and the names here are the ones the
+ * specification gives so that every package describes one document the
+ * same way.
+ *
+ * @internal
  */
 enum Terms
 {

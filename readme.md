@@ -55,38 +55,54 @@ document can live at any address rather than only at one composed from a
 number. An index is never reused or repointed once published, because an
 identifier issued under it has to stay readable years later.
 
-| Index | `Terms`                          | `getTermsUrl()`             |
-|------:|----------------------------------|-----------------------------|
-|     0 | `NotStated`                      | `null`                      |
-|     1 | `ModelTermsForMarketing2` | `https://m4ow.uk/mtm/2.txt` |
-| other | `Unknown`                        | `null`                      |
+`getTerms()` answers with the address of the document. The package turns
+the index into the address, so a caller never handles the byte.
+
+| Index | Document                             | `getTerms()`                |
+|------:|--------------------------------------|-----------------------------|
+|     0 | Not stated in the identifier         | `null`                      |
+|     1 | Model Terms for Marketing, version 2 | `https://m4ow.uk/mtm/2.txt` |
+| other | One this package cannot name         | `null`                      |
 
 An identifier whose payload ends at the match key carries no Terms byte,
 and it reads as index 0, so absence and a byte holding zero mean the same
 thing and no presence flag exists.
 
-`Terms::NotStated` does not mean the identifier is unrestricted. It means
-only that this identifier does not carry the answer, so the answer has to
-come from the surrounding protocol, being the Terms Document Locator in an
-OpenRTB request or whatever else is provided. Carrying the terms here does
-not remove the need to carry that locator where a protocol has one, and
-where the two disagree, take the identifier's own value as the one that
-describes it, because it is inside the signature and the accompanying data
-is not.
+No address does not mean the identifier is unrestricted. It means only that
+this identifier does not carry the answer, so the answer has to come from
+the surrounding protocol, being the Terms Document Locator in an OpenRTB
+request or whatever else is provided. Carrying the terms here does not
+remove the need to carry that locator where a protocol has one, and where
+the two disagree, take the identifier's own value as the one that describes
+it, because it is inside the signature and the accompanying data is not.
 
-An index added after this release reads as `Terms::Unknown`, which is
-deliberately not `Terms::NotStated`. Zero says no terms are stated whilst an
-unknown index says terms are stated that this package cannot name, and
-reading the two as one would take an identifier created under terms for one
-created under none. `getTermsIndex()` says which index it was, so a caller
-can report it or look the document up by hand, and it should then treat the
-identifier as covered by terms it cannot yet read and either update the
-package or refuse the identifier. This package never fetches the address and
-never builds one from the index.
+An index added after this release also answers with no address, and this
+package never fetches an address and never builds one from an index it
+cannot name, because that would name a document nobody wrote and a receiver
+would record having accepted terms that do not exist. A caller therefore
+cannot tell an index of zero from an index this package cannot name, which
+is deliberate, since both lead to the same place.
 
 The `Reserved` identifier type reads every byte after the header as the
 match key, so no byte is left to hold the terms and such an identifier
-answers `NotStated`.
+answers with no address.
+
+### The payload version
+
+Bits 4 and 5 of the flags byte say which payload layout the identifier
+follows, and this package reads version 0. A payload naming version 1, 2 or
+3 is refused with `FodIdParseStatus::UnsupportedPayloadVersion`, and the
+raising readers name the version they found in the message.
+
+No field is read under the layout this package knows once the version says
+otherwise. A later version exists precisely because a field moved, so
+reading such a payload here would answer with values that are wrong rather
+than absent, which is worse than refusing. A version that nothing checks
+protects nothing.
+
+The version is not exposed. Either this package read the layout, in which
+case the accessors are the answer, or it did not, in which case there is no
+identifier to read fields from.
 
 On an identifier carrying a creator context the four LicenseId bytes hold an
 encrypted value that only 51Degrees can turn back into a licence identifier,
@@ -151,9 +167,9 @@ $flags     = $fodId->getFlags();
 $type      = $fodId->getType();        // IdType::Probabilistic / Random / HashedEmail
 $licenseId = $fodId->getLicenseId();
 $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
-$terms     = $fodId->getTerms();       // Terms::NotStated / ModelTermsForMarketing2 / Unknown
-$termsIdx  = $fodId->getTermsIndex();  // the raw index, for one this release cannot name
-$termsUrl  = $fodId->getTermsUrl();    // the address, or null for NotStated and Unknown
+$terms     = $fodId->getTerms();       // address of the terms document it
+                                       // was created under, null where it
+                                       // names none this package knows
 
 // Delegated OWID-level fields and operations. Reading never verifies.
 $domain   = $fodId->getDomain();

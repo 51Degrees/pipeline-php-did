@@ -58,4 +58,13 @@ enum FodIdParseStatus: string
      * takes whatever follows the header, so it never reports this.
      */
     case InvalidTypePayloadLength = 'InvalidTypePayloadLength';
+
+    /**
+     * Bits 4 and 5 of the flags byte name a payload layout version this
+     * package does not know, so no field is read. A later version exists
+     * precisely because a field moved, so reading the payload under the
+     * layout this package knows would answer with values that are wrong
+     * rather than absent.
+     */
+    case UnsupportedPayloadVersion = 'UnsupportedPayloadVersion';
 }
