@@ -83,8 +83,10 @@ enum Terms
      * the two as the same would take an identifier created under terms for
      * one created under none. A caller meeting this should treat the
      * identifier as covered by terms it cannot yet read, and either update
-     * the package or refuse the identifier.
-     * {@see FodId::getTermsIndex()} says which index it was.
+     * the package or refuse the identifier. It answers with no address, as
+     * {@see Terms::NotStated} does, because no package may build an
+     * address from an index it does not know, and the index itself is not
+     * published.
      */
     case Unknown;
 
