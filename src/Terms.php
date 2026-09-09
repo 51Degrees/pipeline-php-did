@@ -101,7 +101,9 @@ enum Terms: int
      * The terms table from the specification, which is the whole of the
      * definition of which index is which document. It is published at
      * https://github.com/51Degrees/specifications/blob/main/did-specification/identifier-layout.md#terms
-     * and this is the only place in the package that carries it.
+     * and this is the only place in the shipped code that carries it. The
+     * tests write the address out again on purpose, so that a test never
+     * compares the reader with itself.
      *
      * One row per terms document, keyed by the case's own index so the
      * number is written once. {@see Terms::NotStated} and
