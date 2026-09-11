@@ -555,6 +555,26 @@ class FodIdTest extends TestCase
         }
     }
 
+    /**
+     * The address table is keyed by the case's own backing value. The key
+     * is a literal because an enum property fetch inside a constant
+     * expression needs PHP 8.3 and this package supports 8.1, so this holds
+     * the literal and the case together rather than trusting them to stay
+     * equal.
+     */
+    public function testTheAddressTableIsKeyedByTheCaseValue(): void
+    {
+        $this->assertSame(
+            'https://m4ow.uk/mtm/2.txt',
+            Terms::fromIndex(Terms::ModelTermsForMarketing2->value)->url(),
+            'the table key no longer matches the case backing value'
+        );
+        $this->assertSame(
+            Terms::ModelTermsForMarketing2,
+            Terms::fromIndex(Terms::ModelTermsForMarketing2->value)
+        );
+    }
+
     public function testEveryCaseAgreesWithTheTermsTable(): void
     {
         // Each case is backed by its own index and the table is keyed by

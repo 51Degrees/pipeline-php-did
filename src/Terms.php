@@ -117,7 +117,13 @@ enum Terms: int
      * which is the cost of a receiver being able to trust what it reads.
      */
     private const ADDRESSES = [
-        self::ModelTermsForMarketing2->value => 'https://m4ow.uk/mtm/2.txt',
+        // The key is the backing value of
+        // {@see Terms::ModelTermsForMarketing2}, written out rather than
+        // fetched from the case because reading an enum property inside a
+        // constant expression needs PHP 8.3 and this package supports 8.1.
+        // FodIdTest::testTheAddressTableIsKeyedByTheCaseValue holds the two
+        // together, so the literal cannot drift from the case.
+        1 => 'https://m4ow.uk/mtm/2.txt',
     ];
 
     /**
