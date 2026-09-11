@@ -50,11 +50,25 @@ use SwanCommunity\Owid\Version;
  * Payload layout. The header (offsets 0-4) is shared by every identifier
  * type, and bits 6-7 of Flags select the {@see IdType} and the length of the
  * match key that follows (32-byte SHA-256 for Probabilistic and HashedEmail,
- * or 16 GUID bytes for Random). An identifier carrying a creator context has
- * a further section after the match key, which the reader keeps in the
- * payload and does not interpret. There is no upper bound on the payload
- * here, because the lengths of that section belong to the cloud and an older
- * reader has to keep accepting an identifier from a newer one.
+ * or 16 GUID bytes for Random). One byte after the match key holds the
+ * {@see Terms} the identifier was created under. An identifier carrying a
+ * creator context has a further section after that byte, which the reader
+ * keeps in the payload and does not interpret. There is no upper bound on
+ * the payload here, because the lengths of that section belong to the cloud
+ * and an older reader has to keep accepting an identifier from a newer one.
+ *
+ * A payload that ends at the match key carries no Terms byte, and such a
+ * payload reads as a Terms of zero, so nothing has to tell an absent byte
+ * from a zero one and no presence flag exists.
+ *
+ * Bits 4 and 5 of the flags byte say which payload layout the identifier
+ * follows, and this package reads version 0. A payload naming any other
+ * version is refused with
+ * {@see FodIdParseStatus::UnsupportedPayloadVersion} rather than read under
+ * the layout this package knows, because a later version exists precisely
+ * because a field moved, so reading one here would answer with values that
+ * are wrong rather than absent. The version is not exposed, because a
+ * caller has nothing to decide with it.
  *
  * Reading is two steps. The OWID library reads the envelope and this class
  * then reads the payload inside it. The `try` factories,
@@ -107,6 +121,13 @@ final class FodId
         + self::MATCH_KEY_LENGTH;
 
     /**
+     * The payload layout version this package reads, carried in bits 4 and
+     * 5 of the flags byte. Any other version is refused rather than read
+     * under this layout.
+     */
+    private const SUPPORTED_PAYLOAD_VERSION = 0;
+
+    /**
      * Deprecated alias for {@see FodId::MATCH_KEY_OFFSET}. The stable,
      * comparable part of a 51Did is now called the match key, mirroring the
      * Model Terms for Marketing vocabulary. Holds the same value.
@@ -129,6 +150,7 @@ final class FodId
     private int $flags;
     private int $licenseId;
     private string $matchKey;
+    private int $termsIndex;
 
     /**
      * Promotes an already-read {@see Owid} into a 51Did by unpacking its
@@ -152,7 +174,12 @@ final class FodId
             );
         }
         $this->owid = $owid;
-        [$this->flags, $this->licenseId, $this->matchKey] = $read;
+        [
+            $this->flags,
+            $this->licenseId,
+            $this->matchKey,
+            $this->termsIndex,
+        ] = $read;
     }
 
     /**
@@ -322,11 +349,18 @@ final class FodId
      * The header must be present before the type can be read, and the type
      * then says how many match key bytes must follow. A Reserved identifier
      * takes whatever follows the header, which is the existing best-effort
-     * reading of a type not yet assigned. Anything after the match key is a
-     * creator context section and is left in the payload unread.
+     * reading of a type not yet assigned. One byte after the match key is
+     * the terms index, and anything after that is a creator context section
+     * and is left in the payload unread.
      *
-     * @return array{int, int, string}|FodIdParseStatus the flags, the licence
-     *     id and the match key bytes, or the reason the payload does not fit
+     * The terms index is the only field that may be absent, because a
+     * payload may end at the match key. A payload with no byte there reads
+     * as zero, which is the same answer as a byte holding zero, so a
+     * shorter payload is not a failure and no length rule turns on it.
+     *
+     * @return array{int, int, string, int}|FodIdParseStatus the flags, the
+     *     licence id, the match key bytes and the terms index, or the reason
+     *     the payload does not fit
      */
     private static function readPayload(string $payload): array|FodIdParseStatus
     {
@@ -335,6 +369,15 @@ final class FodId
             return FodIdParseStatus::PayloadTooShort;
         }
         $flags = ord($payload[self::FLAGS_OFFSET]);
+        // The version is read before any field, because a later version
+        // exists precisely because a field moved. Reading a payload of a
+        // version this package does not know under the layout it does know
+        // would answer with values that are wrong rather than absent,
+        // which is worse than refusing, and a version that nothing checks
+        // protects nothing.
+        if (self::payloadVersion($flags) !== self::SUPPORTED_PAYLOAD_VERSION) {
+            return FodIdParseStatus::UnsupportedPayloadVersion;
+        }
         $matchKeyLength = self::matchKeyLength(
             IdType::fromFlags($flags),
             $length
@@ -349,10 +392,19 @@ final class FodId
             'V',
             substr($payload, self::LICENSE_ID_OFFSET, self::LICENSE_ID_LENGTH)
         )[1];
+        // The terms index is the byte after the match key, so where it
+        // sits follows the match key length the type selects. A payload
+        // with no byte there reads as zero. A Reserved identifier always
+        // reads as zero too, and that is correct rather than a defect,
+        // because the match key length for that type is not defined, so
+        // every byte after the header is the match key and none is left
+        // for a package to find the terms in.
+        $termsOffset = self::HEADER_LENGTH + $matchKeyLength;
         return [
             $flags,
             $licenseId,
             substr($payload, self::MATCH_KEY_OFFSET, $matchKeyLength),
+            $length > $termsOffset ? ord($payload[$termsOffset]) : 0,
         ];
     }
 
@@ -373,6 +425,17 @@ final class FodId
     }
 
     /**
+     * Bits 4 and 5 of the flags byte, being the version of the payload
+     * layout the identifier follows. The envelope carries a version of its
+     * own at its first byte, which versions the envelope, whilst this one
+     * versions the payload.
+     */
+    private static function payloadVersion(int $flags): int
+    {
+        return ($flags >> 4) & 0b11;
+    }
+
+    /**
      * The message for the exception the raising surfaces carry when a
      * payload does not fit, naming the status and the byte counts.
      */
@@ -381,6 +444,14 @@ final class FodId
         string $payload
     ): string {
         $length = strlen($payload);
+        if ($status === FodIdParseStatus::UnsupportedPayloadVersion) {
+            return sprintf(
+                '51Did payload version %d is not one this package can read '
+                . '(%s).',
+                self::payloadVersion(ord($payload[self::FLAGS_OFFSET])),
+                $status->value
+            );
+        }
         if ($status === FodIdParseStatus::PayloadTooShort) {
             return sprintf(
                 '51Did payload must be at least %d bytes and %d were given '
@@ -450,6 +521,33 @@ final class FodId
     public function getHash(): string
     {
         return $this->getMatchKey();
+    }
+
+    /**
+     * The address of the terms document this identifier was created under,
+     * read from the byte after the match key, or null where the identifier
+     * names no document this package knows.
+     *
+     * The byte is an index into a table in the specification and this
+     * package turns the index into the address, so a caller never handles
+     * the byte. The address is answered and never fetched, so what to do
+     * with the document is the caller's decision.
+     *
+     * Null covers both an index of zero, which says the terms are not
+     * stated in the identifier, and an index added to the table after this
+     * package was released, which it cannot name. A caller cannot tell
+     * those two apart, which is deliberate, because both lead to the same
+     * place, being that the identifier does not say which terms it was
+     * created under and the answer has to come from somewhere else. No
+     * address is ever built from an index, since that would name a
+     * document nobody wrote.
+     *
+     * No address does not mean the identifier is unrestricted. Where an
+     * identifier may go is a separate question the usage answers.
+     */
+    public function getTerms(): ?string
+    {
+        return Terms::fromIndex($this->termsIndex)->url();
     }
 
     /** The OWID version. */

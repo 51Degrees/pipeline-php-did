@@ -30,6 +30,7 @@ use fiftyone\pipeline\did\FodId;
 use fiftyone\pipeline\did\FodIdParseResult;
 use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\IdType;
+use fiftyone\pipeline\did\Terms;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Creator;
@@ -44,8 +45,14 @@ use TypeError;
 class FodIdTest extends TestCase
 {
     private const TEST_DOMAIN = '51degrees.com';
-    // 0xA5: usage bits plus the HashedEmail type tag in bits 6-7.
-    private const CANONICAL_FLAGS = 0xA5;
+    // 0x85: the personalized marketing usage in bits 0-2, the payload
+    // version 0 in bits 4-5 and the HashedEmail type tag in bits 6-7.
+    private const CANONICAL_FLAGS = 0x85;
+    // The terms index a marketing identifier carries, being the Model
+    // Terms for Marketing version 2, and the zero a non-marketing one
+    // carries.
+    private const MARKETING_TERMS_INDEX = 1;
+    private const NON_MARKETING_TERMS_INDEX = 0;
     private const CANONICAL_LICENSE_ID = 0x12345678;
 
     private Crypto $crypto;
@@ -71,11 +78,42 @@ class FodIdTest extends TestCase
         return $matchKey;
     }
 
-    private static function canonicalPayload(): string
+    /**
+     * The canonical payload cut off at the end of the match key, so it
+     * carries no terms byte. A reader takes that as a terms index of zero,
+     * and this is the fixture for that rule rather than anything an issuer
+     * would write.
+     */
+    private static function payloadEndingAtMatchKey(): string
     {
         return chr(self::CANONICAL_FLAGS)
             . pack('V', self::CANONICAL_LICENSE_ID)
             . self::canonicalMatchKey();
+    }
+
+    /**
+     * The canonical payload as an issuer writes one, carrying the payload
+     * version 0 in its flags byte and the terms byte of the document a
+     * personalized marketing identifier is created under. This is the
+     * creating side, so it writes every field an issuer writes.
+     */
+    private static function canonicalPayload(): string
+    {
+        return self::payloadEndingAtMatchKey()
+            . chr(self::MARKETING_TERMS_INDEX);
+    }
+
+    /**
+     * The payload with its version bits set to the given version, leaving
+     * every other bit of the flags byte alone.
+     */
+    private static function withPayloadVersion(
+        string $payload,
+        int $version
+    ): string {
+        $flags = ord($payload[FodId::FLAGS_OFFSET]);
+        return chr(($flags & 0b1100_1111) | ($version << 4))
+            . substr($payload, 1);
     }
 
     private static function canonicalGuid(): string
@@ -87,11 +125,22 @@ class FodIdTest extends TestCase
         return $guid;
     }
 
-    private static function canonicalRandomPayload(): string
+    /** The canonical Random payload cut off at the end of its GUID. */
+    private static function randomPayloadEndingAtMatchKey(): string
     {
         return chr((1 << 6) | 0b001)            // Random tag + usage bits
             . pack('V', self::CANONICAL_LICENSE_ID)
             . self::canonicalGuid();
+    }
+
+    /**
+     * The canonical Random payload as an issuer writes one, carrying the
+     * zero terms byte a non-marketing identifier carries.
+     */
+    private static function canonicalRandomPayload(): string
+    {
+        return self::randomPayloadEndingAtMatchKey()
+            . chr(self::NON_MARKETING_TERMS_INDEX);
     }
 
     /**
@@ -274,12 +323,16 @@ class FodIdTest extends TestCase
         $this->assertSame(0, $fod->getFlags());
     }
 
-    public function testFlagsAllBitsSetExposed(): void
+    public function testEveryFlagsBitOutsideTheVersionExposed(): void
     {
+        // Bits 4 and 5 are the payload version and only version 0 is read,
+        // so every other bit is set and those two are left clear. A
+        // payload with them set is refused rather than read, which the
+        // version tests cover.
         $payload = self::canonicalPayload();
-        $payload[FodId::FLAGS_OFFSET] = "\xFF";
+        $payload[FodId::FLAGS_OFFSET] = "\xCF";
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
-        $this->assertSame(255, $fod->getFlags());
+        $this->assertSame(0xCF, $fod->getFlags());
     }
 
     public function testMatchKeyIsImmutable(): void
@@ -450,6 +503,316 @@ class FodIdTest extends TestCase
             $this->signedOwidBase64($payload)
         ));
         $this->assertSame(IdType::Reserved, $read->getType());
+    }
+
+    // ----- Terms -----
+
+    /** The 51Did read back from a signed envelope over the payload given. */
+    private function readSigned(string $payload): FodId
+    {
+        return FodId::fromBase64($this->signedOwidBase64($payload));
+    }
+
+    /**
+     * A canonical payload for each match key length, being the 32 byte
+     * SHA-256 carried by the HashedEmail type and the 16 GUID bytes carried
+     * by Random, so that a test can prove the terms byte is read at the
+     * right offset for both rather than only for the longer one.
+     *
+     * @return array<string, string>
+     */
+    private static function bothMatchKeyLengths(): array
+    {
+        return [
+            '32 byte match key' => self::payloadEndingAtMatchKey(),
+            '16 byte match key' => self::randomPayloadEndingAtMatchKey(),
+        ];
+    }
+
+    public function testPayloadEndingAtTheMatchKeyHasNoAddress(): void
+    {
+        // A payload ending at the match key carries no terms byte, so
+        // there is nothing there to read and it answers with no address.
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $fod = $this->readSigned($payload);
+            $this->assertNull($fod->getTerms(), $name);
+        }
+    }
+
+    public function testATermsByteOfZeroReadsTheSameAsNoByteAtAll(): void
+    {
+        // Absence and a byte holding zero mean the same thing, so nothing
+        // needs to tell them apart and no presence flag exists.
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $absent = $this->readSigned($payload);
+            $stated = $this->readSigned($payload . chr(0));
+            $this->assertSame(
+                $absent->getTerms(),
+                $stated->getTerms(),
+                $name
+            );
+            $this->assertNull($stated->getTerms(), $name);
+        }
+    }
+
+    /**
+     * The address table is keyed by the case's own backing value. The key
+     * is a literal because an enum property fetch inside a constant
+     * expression needs PHP 8.3 and this package supports 8.1, so this holds
+     * the literal and the case together rather than trusting them to stay
+     * equal.
+     */
+    public function testTheAddressTableIsKeyedByTheCaseValue(): void
+    {
+        $this->assertSame(
+            'https://m4ow.uk/mtm/2.txt',
+            Terms::fromIndex(Terms::ModelTermsForMarketing2->value)->url(),
+            'the table key no longer matches the case backing value'
+        );
+        $this->assertSame(
+            Terms::ModelTermsForMarketing2,
+            Terms::fromIndex(Terms::ModelTermsForMarketing2->value)
+        );
+    }
+
+    public function testEveryCaseAgreesWithTheTermsTable(): void
+    {
+        // Each case is backed by its own index and the table is keyed by
+        // that value, so this fails if a case does not read back from its
+        // own index, or if a case that names a document was added without
+        // an address.
+        foreach (Terms::cases() as $case) {
+            if ($case === Terms::Unknown) {
+                // Stands for every index the table does not carry, so it
+                // has no index of its own and no address.
+                $this->assertSame(-1, $case->value);
+                $this->assertNull($case->url());
+                continue;
+            }
+            $this->assertSame(
+                $case,
+                Terms::fromIndex($case->value),
+                $case->name . ' does not read back from its own index'
+            );
+            if ($case === Terms::NotStated) {
+                // Names no document, so it has no address.
+                $this->assertSame(0, $case->value);
+                $this->assertNull($case->url());
+            } else {
+                $this->assertNotNull(
+                    $case->url(),
+                    $case->name . ' names a document with no address'
+                );
+                $this->assertStringStartsWith('https://', $case->url());
+            }
+        }
+    }
+
+    public function testEveryIndexOutsideTheTableIsUnknown(): void
+    {
+        $known = [];
+        foreach (Terms::cases() as $case) {
+            if ($case->value >= 0) {
+                $known[] = $case->value;
+            }
+        }
+        for ($index = 0; $index <= 255; $index++) {
+            if (in_array($index, $known, true)) {
+                continue;
+            }
+            $this->assertSame(
+                Terms::Unknown,
+                Terms::fromIndex($index),
+                'index ' . $index
+            );
+            $this->assertNull(Terms::fromIndex($index)->url());
+        }
+    }
+
+    public function testTermsIndexOneIsTheModelTermsForMarketing(): void
+    {
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $fod = $this->readSigned($payload . chr(1));
+            // The exact versioned address, never a landing page, because a
+            // receiver has to know the document in force when the
+            // identifier was made.
+            $this->assertSame(
+                'https://m4ow.uk/mtm/2.txt',
+                $fod->getTerms(),
+                $name
+            );
+        }
+    }
+
+    public function testUnknownIndexHasNoAddress(): void
+    {
+        // No address is ever built from an index this package cannot name,
+        // because that would name a document nobody wrote and a receiver
+        // would record having accepted terms that do not exist.
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            foreach ([2, 127, 200, 255] as $index) {
+                $fod = $this->readSigned($payload . chr($index));
+                $this->assertNull($fod->getTerms(), "$name index $index");
+            }
+        }
+    }
+
+    public function testAnUnknownIndexAnswersAsNoTermsStatedDoes(): void
+    {
+        // A caller cannot tell the two apart, which is deliberate, since
+        // both say the identifier does not give the terms and the answer
+        // has to come from somewhere else. Inside the package the two are
+        // still separate values, so neither is read as the other.
+        $this->assertNotSame(Terms::NotStated, Terms::Unknown);
+        $payload = self::payloadEndingAtMatchKey();
+        $none = $this->readSigned($payload . chr(0));
+        $unknown = $this->readSigned($payload . chr(200));
+        $this->assertNull($none->getTerms());
+        $this->assertNull($unknown->getTerms());
+    }
+
+    public function testEveryIndexPastTheKnownOnesIsUnknown(): void
+    {
+        // Read straight from the named value, as signing 254 envelopes to
+        // make the same point would only be slower.
+        $this->assertSame(Terms::NotStated, Terms::fromIndex(0));
+        $this->assertSame(
+            Terms::ModelTermsForMarketing2,
+            Terms::fromIndex(1)
+        );
+        for ($index = 2; $index <= 255; $index++) {
+            $terms = Terms::fromIndex($index);
+            $this->assertSame(Terms::Unknown, $terms, "index $index");
+            $this->assertNull($terms->url(), "index $index");
+        }
+    }
+
+    public function testTermsIsReadBeforeACreatorContextSection(): void
+    {
+        // A creator context section follows the terms byte, so an
+        // identifier carrying one proves the byte is taken from the right
+        // offset rather than from the end of the payload.
+        $section = "\x00" . str_repeat("\xAB", 200);
+        foreach (self::bothMatchKeyLengths() as $name => $payload) {
+            $whole = $payload . chr(1) . $section;
+            $fod = $this->readSigned($whole);
+            $this->assertSame(
+                'https://m4ow.uk/mtm/2.txt',
+                $fod->getTerms(),
+                $name
+            );
+            // The match key is unchanged and the section is still kept in
+            // the payload unread.
+            $this->assertSame(
+                substr($payload, FodId::MATCH_KEY_OFFSET),
+                $fod->getMatchKey(),
+                $name
+            );
+            $this->assertSame($whole, $fod->getPayload(), $name);
+        }
+    }
+
+    public function testReservedTypeTakesEveryByteSoNoTermsAreStated(): void
+    {
+        // The Reserved type reads everything after the header as the match
+        // key, which is the existing best-effort reading of a type not yet
+        // assigned, so no byte is left over to hold the terms.
+        $payload = chr(0b1100_0000)
+            . pack('V', self::CANONICAL_LICENSE_ID)
+            . self::canonicalMatchKey()
+            . chr(1);
+        $fod = $this->readSigned($payload);
+        $this->assertSame(IdType::Reserved, $fod->getType());
+        $this->assertNull($fod->getTerms());
+    }
+
+    // ----- The payload version -----
+
+    public function testVersionZeroReadsEveryField(): void
+    {
+        // Bits 4 and 5 clear is version 0, which is the layout this
+        // package reads, so every field reads as it does on the canonical
+        // payload.
+        $fod = $this->readSigned(self::canonicalPayload());
+        $this->assertSame(IdType::HashedEmail, $fod->getType());
+        $this->assertSame(self::CANONICAL_FLAGS, $fod->getFlags());
+        $this->assertSame(self::CANONICAL_LICENSE_ID, $fod->getLicenseId());
+        $this->assertSame(
+            self::canonicalMatchKey(),
+            $fod->getMatchKey()
+        );
+        $this->assertSame('https://m4ow.uk/mtm/2.txt', $fod->getTerms());
+    }
+
+    public function testAnUnassignedPayloadVersionIsRefused(): void
+    {
+        // Versions 1, 2 and 3 are not assigned, so a payload naming one is
+        // refused rather than read under the layout this package knows.
+        foreach ([1, 2, 3] as $version) {
+            $base64 = $this->signedOwidBase64(
+                self::withPayloadVersion(self::canonicalPayload(), $version)
+            );
+            $result = FodId::tryFromBase64($base64);
+            $this->assertFalse($result->ok, "version $version");
+            $this->assertSame(
+                FodIdParseStatus::UnsupportedPayloadVersion,
+                $result->status,
+                "version $version"
+            );
+            // Nothing is handed back, rather than a value with some fields
+            // filled in, because there is no identifier to expose fields
+            // for when the layout was not understood.
+            $this->assertNull($result->fodId, "version $version");
+        }
+    }
+
+    public function testTheRaisingReadersNameThePayloadVersion(): void
+    {
+        foreach ([1, 2, 3] as $version) {
+            $base64 = $this->signedOwidBase64(
+                self::withPayloadVersion(self::canonicalPayload(), $version)
+            );
+            try {
+                FodId::fromBase64($base64);
+                $this->fail("version $version should have been refused");
+            } catch (InvalidArgumentException $thrown) {
+                $this->assertStringContainsString(
+                    "version $version",
+                    $thrown->getMessage()
+                );
+            }
+        }
+    }
+
+    public function testThePayloadVersionIsReadApartFromTheOtherBits(): void
+    {
+        // A reader masking the wrong bits would refuse a version 0
+        // identifier or let a later version through, so every combination
+        // of the usage and type bits is tried.
+        foreach ([0b000, 0b001, 0b011, 0b111] as $usage) {
+            foreach ([0b00, 0b10, 0b11] as $type) {
+                $flags = ($type << 6) | $usage;
+                $payload = chr($flags)
+                    . substr(self::payloadEndingAtMatchKey(), 1);
+                $this->assertTrue(
+                    FodId::tryFromBase64(
+                        $this->signedOwidBase64($payload)
+                    )->ok,
+                    "flags $flags"
+                );
+                foreach ([1, 2, 3] as $version) {
+                    $refused = FodId::tryFromBase64($this->signedOwidBase64(
+                        self::withPayloadVersion($payload, $version)
+                    ));
+                    $this->assertSame(
+                        FodIdParseStatus::UnsupportedPayloadVersion,
+                        $refused->status,
+                        "flags $flags version $version"
+                    );
+                    $this->assertNull($refused->fodId);
+                }
+            }
+        }
     }
 
     // ----- Gap tests (runbook section 6b) -----
@@ -624,7 +987,7 @@ class FodIdTest extends TestCase
         // reader must keep accepting it, with the section after the match
         // key.
         $section = "\x00" . str_repeat("\xAB", 18);
-        $payload = self::canonicalPayload() . $section;
+        $payload = self::payloadEndingAtMatchKey() . $section;
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(self::canonicalMatchKey(), $fod->getMatchKey());
         $this->assertSame($payload, $fod->getPayload());
@@ -686,8 +1049,8 @@ class FodIdTest extends TestCase
         // with identifiers a newer cloud issues.
         $section = "\x00" . str_repeat("\xAB", 200);
         foreach ([
-            self::canonicalPayload() . $section,
-            self::canonicalRandomPayload() . $section,
+            self::payloadEndingAtMatchKey() . $section,
+            self::randomPayloadEndingAtMatchKey() . $section,
         ] as $payload) {
             $owid = $this->signedOwid($payload);
             foreach ([
@@ -710,7 +1073,8 @@ class FodIdTest extends TestCase
         // There is no upper bound in this package. Every length past the
         // base for the type reads, and the match key is the same each time.
         foreach ([1, 19, 64, 200, 4096] as $extra) {
-            $payload = self::canonicalPayload() . str_repeat("\xCC", $extra);
+            $payload = self::payloadEndingAtMatchKey()
+                . str_repeat("\xCC", $extra);
             $fod = $this->assertParsed(FodId::tryFromBase64(
                 $this->signedOwidBase64($payload)
             ));
