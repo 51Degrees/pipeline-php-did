@@ -24,21 +24,24 @@ envelopes.**
 
 ## Payload layout
 
-| Offset | Length | Field      | Type                                            |
-|-------:|-------:|------------|-------------------------------------------------|
-|      0 |      1 | Flags      | uint8: bits 0-2 usage, bits 6-7 identifier type |
-|      1 |      4 | LicenseId  | uint32 (little-endian)                          |
-|      5 |  16/32 | Match key  | SHA-256 (Probabilistic, HashedEmail) or GUID (Random) |
+The byte structure of a 51Did is specified once for every language at
+[identifier layout](https://github.com/51Degrees/specifications/blob/main/did-specification/identifier-layout.md), which is the authority for
+what each byte holds, and what every 51Did package offers a caller is listed
+at [package surface](https://github.com/51Degrees/specifications/blob/main/did-specification/package-surface.md).
 
-| Bits 7-6 | `IdType`        | Match key length | Minimum payload |
-|---------:|-----------------|-----------------:|----------------:|
-|     `00` | `Probabilistic` |           32 |              37 |
-|     `01` | `Random`        |           16 |              21 |
-|     `10` | `HashedEmail`   |           32 |              37 |
-|     `11` | `Reserved`      |    remainder |               5 |
+The package reads the payload for you and offers a named accessor for each
+field, so the offsets are not part of its surface. What a caller needs to
+know is that the flags byte names the identifier type, which decides the
+length of the match key that follows.
 
-Identifiers issued before the type tag existed have bits 6-7 zeroed and decode
-as `Probabilistic`.
+| `IdType`        | Match key length | Minimum payload |
+|-----------------|-----------------:|----------------:|
+| `Probabilistic` |               32 |              37 |
+| `Random`        |               16 |              21 |
+| `HashedEmail`   |               32 |              37 |
+| `Reserved`      |        remainder |               5 |
+
+Identifiers issued before the type tag existed decode as `Probabilistic`.
 
 The minimum payload is the only length rule this package applies. There is
 no upper bound here, because anything after the match key is a creator
@@ -104,8 +107,10 @@ if (!$result->ok) {
 }
 $fodId = $result->fodId;
 
-$flags     = $fodId->getFlags();
 $type      = $fodId->getType();        // IdType::Probabilistic / Random / HashedEmail
+$usage     = $fodId->getUsage();       // Usage::NonMarketing / Standard / Personalized, the highest granted
+$usage->idUsage();                     // 'non-marketing' / 'standard' / 'personalized', the cloud's id.usage value
+$consented = $fodId->isUsageFromConsent(); // whether the usage came from a consent string
 $licenseId = $fodId->getLicenseId();
 $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
 
@@ -113,19 +118,41 @@ $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
 $domain   = $fodId->getDomain();
 $verified = $fodId->verify($publicKeyPem);
 $status   = $fodId->signatureStatus($publicKeyPem); // SignatureStatus
+$date     = $fodId->getDate();
 $base64   = $fodId->asBase64();
 $urlSafe  = $fodId->asBase64Url();    // for a URL, no padding
-$minutes  = $fodId->getDateMinutes(); // minutes since 2020-01-01T00:00:00Z
 ```
 
 `FodId::fromBase64()`, `FodId::fromByteArray()`, `FodId::fromOwid()` and the
 constructor remain and raise for the same inputs the `try` factories
-report, so code written against them keeps working. `getHash()` remains as
-a deprecated alias of `getMatchKey()` answering the same bytes, and the
-constants `FodId::HASH_OFFSET` and `FodId::HASH_LENGTH` remain as
-deprecated aliases of `FodId::MATCH_KEY_OFFSET` and
-`FodId::MATCH_KEY_LENGTH` holding the same values. The method and both
-constant aliases will be removed in a future release.
+report, so code written against them keeps working.
+
+## What the identifier says it may be used for
+
+`getUsage()` answers the usage the 51Did was created for, which decides
+where the identifier may go. One created for `Usage::NonMarketing` must
+never be passed to a demand source, and one created for `Usage::Standard`
+or `Usage::Personalized` may be passed only to a recipient that has
+accepted the applicable terms. `Usage::None` means no usage bit is set at
+all, which the cloud never issues, so such an identifier came from
+somewhere else or is damaged and should be treated as one that may not be
+passed on. `idUsage()` gives the cloud's `id.usage` value for the same
+answer, being `non-marketing`, `standard` or `personalized`.
+
+Read the usage only through `getUsage()`. The three usages are cumulative
+in the flags byte rather than exclusive, as non-marketing sets bit 0,
+standard sets bits 0 and 1, and personalized sets bits 0, 1 and 2, so
+every marketing identifier also carries the non-marketing bit. Code that
+masked the byte for that bit alone would read every marketing identifier
+as non-marketing, which is the wrong way round for a data protection
+decision. `getUsage()` answers with the highest usage granted, so that
+mistake cannot be made, and this is why the raw flags byte, the byte
+offsets and the raw count of minutes in the date are no longer offered.
+
+`isUsageFromConsent()` says whether the usage was worked out from an IAB
+consent string the caller sent rather than stated by the caller directly.
+Both are legitimate ways to arrive at a usage and the answer says nothing
+about which usage it is.
 
 ## Reading versus verifying
 
@@ -344,7 +371,7 @@ reason. The demo below shows both.
   `signatureStatus($publicKeyPem)` or `DidClient::verifySignature()` when
   needed.
 - **No upper bound on the payload.** The type minimums in the table above
-  are the only length rule. The 4096 character figure in `DidClient` is
+  are the only length rule this package applies. The 4096 character figure in `DidClient` is
   that client's own guard on what it will send and not a property of the
   format.
 - **No creation of new 51Dids.** `FodId` is a parser and `DidClient`
