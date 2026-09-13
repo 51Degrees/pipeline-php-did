@@ -233,10 +233,16 @@ class DidClientLiveTest extends TestCase
             }
         }
 
+        // Reported as a skip rather than written to stderr, because a
+        // runner prints the counts and not the output, so a run that proved
+        // nothing would otherwise look identical to one that proved
+        // everything.
         if ($checked === 0) {
-            fwrite(STDERR, "NOTHING PROVEN: this resource key returned no "
-                . "marketing 51Did, so no terms address was read. Use a key "
-                . "entitled to the standard or personalized usage.\n");
+            $this->markTestSkipped(
+                'This resource key returned no marketing 51Did, so no terms '
+                . 'address was read and this run did not prove it. Use a key '
+                . 'entitled to the standard or personalized usage.'
+            );
         }
     }
 
@@ -290,10 +296,13 @@ class DidClientLiveTest extends TestCase
             $proven += count($identifiers);
         }
 
+        // Same reasoning as the usage test above.
         if ($proven === 0) {
-            fwrite(STDERR, "NOTHING PROVEN: this resource key returned no "
-                . "identifier for either consent string, so the "
-                . "usage-from-consent bit was never read.\n");
+            $this->markTestSkipped(
+                'This resource key returned no identifier for either consent '
+                . 'string, so the usage-from-consent bit was never read and '
+                . 'this run did not prove it.'
+            );
         }
     }
 }
