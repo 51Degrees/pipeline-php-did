@@ -32,6 +32,7 @@ use fiftyone\pipeline\did\ContextOutcome;
 use fiftyone\pipeline\did\DidClient;
 use fiftyone\pipeline\did\FactorOutcome;
 use fiftyone\pipeline\did\FodId;
+use fiftyone\pipeline\did\FodIdLayout;
 use fiftyone\pipeline\did\FodIdParseStatus;
 use fiftyone\pipeline\did\NotSupportedException;
 use fiftyone\pipeline\did\SignatureCheck;
@@ -105,7 +106,7 @@ class DidClientTest extends TestCase
     private static function payload(): string
     {
         $matchKey = '';
-        for ($i = 0; $i < FodId::MATCH_KEY_LENGTH; $i++) {
+        for ($i = 0; $i < FodIdLayout::MATCH_KEY_LENGTH; $i++) {
             $matchKey .= chr(0x20 + $i);
         }
         return chr(0x05) . pack('V', 0x12345678) . $matchKey;
@@ -580,7 +581,7 @@ class DidClientTest extends TestCase
         // A Reserved type header-only payload parses as a FodId but is
         // shorter than the base for a 32 byte match key.
         $payload = chr(0b1100_0000)
-            . str_repeat("\x00", FodId::HEADER_LENGTH - 1);
+            . str_repeat("\x00", FodIdLayout::HEADER_LENGTH - 1);
         $fodId = $this->signedAt($inside, $this->keyB, $payload);
         $this->assertFalse($this->client()->verifySignature($fodId));
         $this->assertCount(0, $this->requests);
@@ -672,7 +673,7 @@ class DidClientTest extends TestCase
         $this->queueJson(200, $this->schedule());
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
         $payload = chr(1 << 6) . pack('V', 1)
-            . str_repeat("\x42", FodId::GUID_LENGTH);
+            . str_repeat("\x42", FodIdLayout::GUID_LENGTH);
         $this->assertTrue($this->client()->verifySignature(
             $this->signedAt($inside, $this->keyB, $payload)
         ));
@@ -735,7 +736,7 @@ class DidClientTest extends TestCase
             $this->keyA,
             self::DOMAIN,
             self::at(self::T0),
-            substr(self::payload(), 0, FodId::PAYLOAD_LENGTH - 1)
+            substr(self::payload(), 0, FodIdLayout::PAYLOAD_LENGTH - 1)
         );
         $good = $this->signedAt(self::at(self::T0), $this->keyA)->asByteArray();
         return [
@@ -1131,7 +1132,7 @@ class DidClientTest extends TestCase
         // A Reserved type header-only payload parses as a FodId but is
         // shorter than the base for a 32 byte match key.
         $payload = chr(0b1100_0000)
-            . str_repeat("\x00", FodId::HEADER_LENGTH - 1);
+            . str_repeat("\x00", FodIdLayout::HEADER_LENGTH - 1);
         $fodId = $this->signedAt($inside, $this->keyB, $payload);
         $this->assertSame(
             SignatureCheck::InvalidLength,

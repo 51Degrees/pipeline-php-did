@@ -280,13 +280,14 @@ final class DidClient
             return SignatureCheck::UnsupportedVersion;
         }
         $payload = $fodId->getPayload();
-        if (strlen($payload) < FodId::HEADER_LENGTH) {
+        if (strlen($payload) < FodIdLayout::HEADER_LENGTH) {
             return SignatureCheck::InvalidLength;
         }
-        $isRandom = IdType::fromFlags(ord($payload[FodId::FLAGS_OFFSET]))
+        $isRandom = IdType::fromFlags(ord($payload[FodIdLayout::FLAGS_OFFSET]))
             === IdType::Random;
-        $baseLength = FodId::HEADER_LENGTH
-            + ($isRandom ? FodId::GUID_LENGTH : FodId::MATCH_KEY_LENGTH);
+        $baseLength = FodIdLayout::HEADER_LENGTH + ($isRandom
+            ? FodIdLayout::GUID_LENGTH
+            : FodIdLayout::MATCH_KEY_LENGTH);
         if (strlen($payload) < $baseLength) {
             return SignatureCheck::InvalidLength;
         }
