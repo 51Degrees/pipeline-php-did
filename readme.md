@@ -29,6 +29,10 @@ The byte structure of a 51Did is specified once for every language at
 what each byte holds, and what every 51Did package offers a caller is listed
 at [package surface](https://github.com/51Degrees/specifications/blob/main/did-specification/package-surface.md).
 
+One byte after the match key holds the terms index, read through
+`getTerms()`, which answers with the address of the document the
+identifier was created under.
+
 The package reads the payload for you and offers a named accessor for each
 field, so the offsets are not part of its surface. What a caller needs to
 know is that the flags byte names the identifier type, which decides the
@@ -44,9 +48,67 @@ length of the match key that follows.
 Identifiers issued before the type tag existed decode as `Probabilistic`.
 
 The minimum payload is the only length rule this package applies. There is
-no upper bound here, because anything after the match key is a creator
+no upper bound here, because anything after the terms byte is a creator
 context section whose lengths belong to the cloud, and an older reader has
 to keep accepting an identifier a newer cloud issues.
+
+### Terms
+
+The terms byte says which terms document the identifier was created under,
+so the terms travel with the identifier rather than alongside it. It is an
+index into the table below and is **not** a version number, so that a later
+document can live at any address rather than only at one composed from a
+number. An index is never reused or repointed once published, because an
+identifier issued under it has to stay readable years later.
+
+`getTerms()` answers with the address of the document. The package turns
+the index into the address, so a caller never handles the byte.
+
+| Index | Document                             | `getTerms()`                |
+|------:|--------------------------------------|-----------------------------|
+|     0 | Not stated in the identifier         | `null`                      |
+|     1 | Model Terms for Marketing, version 2 | `https://m4ow.uk/mtm/2.txt` |
+| other | One this package cannot name         | `null`                      |
+
+An identifier whose payload ends at the match key carries no Terms byte,
+and it reads as index 0, so absence and a byte holding zero mean the same
+thing and no presence flag exists.
+
+No address does not mean the identifier is unrestricted. It means only that
+this identifier does not carry the answer, so the answer has to come from
+the surrounding protocol, being the Terms Document Locator in an OpenRTB
+request or whatever else is provided. Carrying the terms here does not
+remove the need to carry that locator where a protocol has one, and where
+the two disagree, take the identifier's own value as the one that describes
+it, because it is inside the signature and the accompanying data is not.
+
+An index added after this release also answers with no address, and this
+package never fetches an address and never builds one from an index it
+cannot name, because that would name a document nobody wrote and a receiver
+would record having accepted terms that do not exist. A caller therefore
+cannot tell an index of zero from an index this package cannot name, which
+is deliberate, since both lead to the same place.
+
+The `Reserved` identifier type reads every byte after the header as the
+match key, so no byte is left to hold the terms and such an identifier
+answers with no address.
+
+### The payload version
+
+Bits 4 and 5 of the flags byte say which payload layout the identifier
+follows, and this package reads version 0. A payload naming version 1, 2 or
+3 is refused with `FodIdParseStatus::UnsupportedPayloadVersion`, and the
+raising readers name the version they found in the message.
+
+No field is read under the layout this package knows once the version says
+otherwise. A later version exists precisely because a field moved, so
+reading such a payload here would answer with values that are wrong rather
+than absent, which is worse than refusing. A version that nothing checks
+protects nothing.
+
+The version is not exposed. Either this package read the layout, in which
+case the accessors are the answer, or it did not, in which case there is no
+identifier to read fields from.
 
 On an identifier carrying a creator context the four LicenseId bytes hold an
 encrypted value that only 51Degrees can turn back into a licence identifier,
@@ -113,6 +175,9 @@ $usage->idUsage();                     // 'non-marketing' / 'standard' / 'person
 $consented = $fodId->isUsageFromConsent(); // whether the usage came from a consent string
 $licenseId = $fodId->getLicenseId();
 $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
+$terms     = $fodId->getTerms();       // address of the terms document it
+                                       // was created under, null where it
+                                       // names none this package knows
 
 // Delegated OWID-level fields and operations. Reading never verifies.
 $domain   = $fodId->getDomain();

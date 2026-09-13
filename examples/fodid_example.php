@@ -52,6 +52,11 @@ const DOMAIN = '51degrees.com';
  * 4 licence id bytes and a 32-byte match key. The byte structure is
  * specified at
  * https://github.com/51Degrees/specifications/blob/main/did-specification/identifier-layout.md
+ *
+ * One byte after the match key holds the terms index. Index 1 is the
+ * Model Terms for Marketing version 2, which an issuer writes for every
+ * marketing identifier, and a payload that ends at the match key
+ * carries no terms byte and answers with no address instead.
  */
 function samplePayload(): string
 {
@@ -62,7 +67,7 @@ function samplePayload(): string
     // Bits 0 and 1 of the flags byte say the identifier was created for
     // standard marketing, and bits 6 and 7 are zero for the Probabilistic
     // type. Read them with getUsage() and getType(), never by masking.
-    return chr(0b0000_0011) . pack('V', 0x12345678) . $matchKey;
+    return chr(0b0000_0011) . pack('V', 0x12345678) . $matchKey . chr(1);
 }
 
 /**
@@ -95,6 +100,10 @@ echo '  Consented : ' . ($fodId->isUsageFromConsent() ? 'true' : 'false')
     . "\n";
 echo '  LicenseId : ' . $fodId->getLicenseId() . "\n";
 echo '  Match key : ' . bin2hex($fodId->getMatchKey()) . "\n";
+// The terms the identifier was created under travel with it. The address
+// is returned and never fetched, and it is null where the terms are not
+// stated or the index is one this release cannot name.
+echo '  Terms     : ' . ($fodId->getTerms() ?? 'none') . "\n";
 // Reading never verifies, so the signature is a separate question.
 echo '  Verifies  : ' . ($fodId->verify($crypto->publicKeyPem()) ? 'true' : 'false') . "\n";
 echo '  Signature : ' . $fodId->signatureStatus($crypto->publicKeyPem())->value . "\n";
