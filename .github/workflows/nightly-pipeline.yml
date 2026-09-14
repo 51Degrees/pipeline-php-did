@@ -1,0 +1,39 @@
+name: Nightly Pipeline
+
+# Runs at 01:00 UTC, the same time as every other 51Degrees repository, and
+# hands each pull request that is eligible for automation to the shared
+# common-ci workflow. That workflow merges the pull request into main in a
+# clone, builds and tests the result, and merges the pull request when every
+# platform passes. Until this existed a pull request here sat until somebody
+# merged it by hand, which is why several waited for days.
+#
+# Eligibility is decided centrally by common-ci steps/get-pull-requests.ps1,
+# being a pull request that is not a draft, has no review still requested, has
+# no review that is anything other than an approval, and either is approved by
+# somebody with write access or was raised by somebody with write access.
+#
+# ci.yml still runs on every push and pull request. This does not replace it,
+# because ci.yml tests the pull request as written whilst this tests what main
+# will actually contain once the pull request is merged.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dryrun:
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 1 * * *'
+
+jobs:
+  PullRequests:
+    name: Nightly Pull Requests
+    uses: 51Degrees/common-ci/.github/workflows/nightly-pull-requests.yml@main
+    with:
+      repo-name: ${{ github.event.repository.name }}
+      org-name: ${{ github.event.repository.owner.login }}
+      dryrun: ${{ inputs.dryrun || false }}
+      skip-compare-performance: true
+    secrets:
+      token: ${{ secrets.ACCESS_TOKEN }}
+      TestResourceKey: ${{ secrets.SUPER_RESOURCE_KEY }}

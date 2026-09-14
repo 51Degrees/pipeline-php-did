@@ -1,0 +1,26 @@
+[
+    {
+        "Name": "Ubuntu_PHP_8.1",
+        "Image": "ubuntu-latest",
+        "Language": "php",
+        "LanguageVersion": "8.1"
+    },
+    {
+        "Name": "Ubuntu_PHP_8.3",
+        "Image": "ubuntu-latest",
+        "Language": "php",
+        "LanguageVersion": "8.3"
+    },
+    {
+        "Name": "Windows_PHP_8.1",
+        "Image": "windows-latest",
+        "Language": "php",
+        "LanguageVersion": "8.1"
+    },
+    {
+        "Name": "Windows_PHP_8.3",
+        "Image": "windows-latest",
+        "Language": "php",
+        "LanguageVersion": "8.3"
+    }
+]
