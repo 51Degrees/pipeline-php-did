@@ -36,4 +36,3 @@ jobs:
       skip-compare-performance: true
     secrets:
       token: ${{ secrets.ACCESS_TOKEN }}
-      TestResourceKey: ${{ secrets.SUPER_RESOURCE_KEY }}
