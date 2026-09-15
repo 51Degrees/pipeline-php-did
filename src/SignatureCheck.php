@@ -57,8 +57,9 @@ enum SignatureCheck: string
 
     /**
      * The published schedule holds no key covering the identifier's date,
-     * which happens when the date precedes the whole schedule. The
-     * signature was never examined, so this must not be read as forged.
+     * either because the date precedes the whole schedule or because the
+     * endpoint published no keys at all. The signature was never
+     * examined, so this must not be read as forged.
      */
     case NoKeyForDate = 'NoKeyForDate';
 
