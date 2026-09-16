@@ -318,15 +318,89 @@ class FodIdTest extends TestCase
         $this->assertSame(0x80000000, $fod->getLicenseId());
     }
 
-    public function testFlagsByteWithNoBitsSetIsRead(): void
+    /**
+     * Usage bits 000 are not a usage. The cloud never writes them, so the
+     * payload is refused by every reader, the answering ones with
+     * {@see FodIdParseStatus::NoUsage} and the raising ones with a message
+     * naming the bits it found. Every type and both settings of bit 3 are
+     * tried, so the check is on bits 0 to 2 alone.
+     */
+    public function testUsageBitsAllClearAreRefused(): void
     {
-        $payload = self::canonicalPayload();
-        $payload[FodIdLayout::FLAGS_OFFSET] = "\x00";
-        $fod = FodId::fromBase64($this->signedOwidBase64($payload));
-        $this->assertSame(0, self::flagsOf($fod));
-        $this->assertSame(Usage::None, $fod->getUsage());
-        $this->assertFalse($fod->isUsageFromConsent());
-        $this->assertSame(IdType::Probabilistic, $fod->getType());
+        foreach ([0b00, 0b01, 0b10, 0b11] as $type) {
+            foreach ([0b0000, 0b1000] as $indirect) {
+                $flags = ($type << 6) | $indirect;
+                $payload = self::canonicalPayload();
+                $payload[FodIdLayout::FLAGS_OFFSET] = chr($flags);
+                $owid = $this->signedOwid($payload);
+                foreach ([
+                    FodId::tryFromBase64($owid->asBase64()),
+                    FodId::tryFromByteArray($owid->asByteArray()),
+                    FodId::tryFromOwid($owid),
+                ] as $result) {
+                    $this->assertFalse($result->ok, "flags $flags");
+                    $this->assertSame(
+                        FodIdParseStatus::NoUsage,
+                        $result->status,
+                        "flags $flags"
+                    );
+                    $this->assertSame('NoUsage', $result->status->value);
+                    $this->assertNull($result->fodId, "flags $flags");
+                }
+                foreach ([
+                    fn () => FodId::fromBase64($owid->asBase64()),
+                    fn () => FodId::fromByteArray($owid->asByteArray()),
+                    fn () => FodId::fromOwid($owid),
+                    fn () => new FodId($owid),
+                ] as $read) {
+                    try {
+                        $read();
+                        $this->fail("flags $flags should have been refused");
+                    } catch (InvalidArgumentException $thrown) {
+                        $this->assertStringContainsString(
+                            'usage bits are 000',
+                            $thrown->getMessage()
+                        );
+                        $this->assertStringContainsString(
+                            'NoUsage',
+                            $thrown->getMessage()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Only 000 is refused. The other patterns the cloud does not write
+     * keep their reading as the highest usage granted.
+     */
+    public function testOnlyUsageBitsAllClearAreRefused(): void
+    {
+        $cases = [
+            [0b010, Usage::Standard],
+            [0b100, Usage::Personalized],
+            [0b101, Usage::Personalized],
+            [0b110, Usage::Personalized],
+        ];
+        foreach ($cases as [$bits, $expected]) {
+            $payload = self::canonicalPayload();
+            $payload[FodIdLayout::FLAGS_OFFSET] = chr($bits);
+            $read = FodId::tryFromBase64($this->signedOwidBase64($payload));
+            $this->assertTrue($read->ok, 'usage bits ' . decbin($bits));
+            $this->assertSame(
+                $expected,
+                $read->fodId->getUsage(),
+                'usage bits ' . decbin($bits)
+            );
+        }
+    }
+
+    public function testUsageFromFlagsRefusesBitsAllClear(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('usage bits are 000');
+        Usage::fromFlags(0b1100_1000);
     }
 
     public function testFlagsByteWithEveryBitOutsideTheVersionIsRead(): void
@@ -343,7 +417,7 @@ class FodIdTest extends TestCase
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(0xCF, self::flagsOf($fod));
         $this->assertSame(Usage::Personalized, $fod->getUsage());
-        $this->assertTrue($fod->isUsageFromConsent());
+        $this->assertTrue($fod->isUsageIndirect());
         $this->assertSame(IdType::Reserved, $fod->getType());
     }
 
@@ -357,7 +431,11 @@ class FodIdTest extends TestCase
 
     public function testPayloadOneByteShortThrows(): void
     {
-        $base64 = $this->signedOwidBase64(str_repeat("\x00", FodIdLayout::PAYLOAD_LENGTH - 1));
+        // The non-marketing bit is set so the payload is refused for its
+        // length rather than for stating no usage.
+        $base64 = $this->signedOwidBase64(
+            "\x01" . str_repeat("\x00", FodIdLayout::PAYLOAD_LENGTH - 2)
+        );
         $this->expectException(InvalidArgumentException::class);
         FodId::fromBase64($base64);
     }
@@ -463,7 +541,6 @@ class FodIdTest extends TestCase
     public function testUsageIsTheHighestGranted(): void
     {
         $cases = [
-            [0b000, Usage::None, null],
             [0b001, Usage::NonMarketing, 'non-marketing'],
             [0b011, Usage::Standard, 'standard'],
             [0b111, Usage::Personalized, 'personalized'],
@@ -475,17 +552,32 @@ class FodIdTest extends TestCase
             $this->assertSame($expected, $fod->getUsage(), 'usage bits ' . decbin($bits));
             $this->assertSame($idUsage, $fod->getUsage()->idUsage());
             $this->assertSame(IdType::Random, $fod->getType());
-            $this->assertFalse($fod->isUsageFromConsent());
+            $this->assertFalse($fod->isUsageIndirect());
         }
     }
 
-    public function testUsageFromConsentIsBitThree(): void
+    /**
+     * Bit 3 says whether the usage is indirect, and nothing else. Set, it
+     * answers true, and clear, it answers false, for every usage, and the
+     * usage read is the same either way.
+     */
+    public function testUsageIsIndirectIsBitThree(): void
     {
-        $payload = self::canonicalRandomPayload();
-        $payload[FodIdLayout::FLAGS_OFFSET] = chr((1 << 6) | 0b1011);
-        $fod = FodId::fromBase64($this->signedOwidBase64($payload));
-        $this->assertTrue($fod->isUsageFromConsent());
-        $this->assertSame(Usage::Standard, $fod->getUsage());
+        foreach ([
+            [0b001, Usage::NonMarketing],
+            [0b011, Usage::Standard],
+            [0b111, Usage::Personalized],
+        ] as [$bits, $usage]) {
+            foreach ([true, false] as $indirect) {
+                $payload = self::canonicalRandomPayload();
+                $payload[FodIdLayout::FLAGS_OFFSET] = chr(
+                    (1 << 6) | ($indirect ? 0b1000 : 0) | $bits
+                );
+                $fod = FodId::fromBase64($this->signedOwidBase64($payload));
+                $this->assertSame($indirect, $fod->isUsageIndirect());
+                $this->assertSame($usage, $fod->getUsage());
+            }
+        }
     }
 
     public function testTypeRandomWhenBits01(): void
@@ -529,7 +621,7 @@ class FodIdTest extends TestCase
 
     public function testReservedHeaderOnlyParses(): void
     {
-        $payload = chr(0b1100_0000) . str_repeat("\x00", FodIdLayout::MATCH_KEY_OFFSET - 1);
+        $payload = chr(0b1100_0001) . str_repeat("\x00", FodIdLayout::MATCH_KEY_OFFSET - 1);
         $fod = FodId::fromBase64($this->signedOwidBase64($payload));
         $this->assertSame(IdType::Reserved, $fod->getType());
         $this->assertSame(0, strlen($fod->getMatchKey()));
@@ -753,7 +845,7 @@ class FodIdTest extends TestCase
         // The Reserved type reads everything after the header as the match
         // key, which is the existing best-effort reading of a type not yet
         // assigned, so no byte is left over to hold the terms.
-        $payload = chr(0b1100_0000)
+        $payload = chr(0b1100_0001)
             . pack('V', self::CANONICAL_LICENSE_ID)
             . self::canonicalMatchKey()
             . chr(1);
@@ -830,12 +922,22 @@ class FodIdTest extends TestCase
                 $flags = ($type << 6) | $usage;
                 $payload = chr($flags)
                     . substr(self::payloadEndingAtMatchKey(), 1);
-                $this->assertTrue(
-                    FodId::tryFromBase64(
-                        $this->signedOwidBase64($payload)
-                    )->ok,
-                    "flags $flags"
+                // Usage bits 000 are refused at version 0 for stating no
+                // usage, and a later version is refused for its version
+                // before the usage bits are looked at, since those bits may
+                // have moved.
+                $atVersionZero = FodId::tryFromBase64(
+                    $this->signedOwidBase64($payload)
                 );
+                if ($usage === 0b000) {
+                    $this->assertSame(
+                        FodIdParseStatus::NoUsage,
+                        $atVersionZero->status,
+                        "flags $flags"
+                    );
+                } else {
+                    $this->assertTrue($atVersionZero->ok, "flags $flags");
+                }
                 foreach ([1, 2, 3] as $version) {
                     $refused = FodId::tryFromBase64($this->signedOwidBase64(
                         self::withPayloadVersion($payload, $version)

@@ -59,7 +59,8 @@ final class RedeemResult
 
     /**
      * Factor name to outcome, present only when the cloud sent `factors`,
-     * which is the mismatch case.
+     * which is the mismatch case. The keys are the names the cloud sent,
+     * listed on {@see FactorOutcome}, and are kept exactly as sent.
      *
      * @var array<string, FactorOutcome>|null
      */

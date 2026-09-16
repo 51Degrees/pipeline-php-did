@@ -25,6 +25,8 @@ declare(strict_types=1);
 
 namespace fiftyone\pipeline\did;
 
+use InvalidArgumentException;
+
 /**
  * The usage a 51Did was created for, carried in bits 0-2 of the flags
  * byte and read with {@see FodId::getUsage()}. It decides where the
@@ -42,19 +44,15 @@ namespace fiftyone\pipeline\did;
  * round for a data protection decision. {@see Usage::fromFlags()} answers
  * with the highest usage granted, so that mistake cannot be made.
  *
+ * There are exactly three usages. A flags byte with bits 0-2 all clear
+ * is not a fourth one, and a payload carrying it is refused when read.
+ *
  * The case names are the cross language names of the usage, the same in
  * every 51Did package, and {@see Usage::idUsage()} gives the cloud's
  * `id.usage` value.
  */
 enum Usage: int
 {
-    /**
-     * No usage bit is set. The cloud never issues such an identifier, so
-     * this is an identifier from somewhere else or a damaged one, and it
-     * should be treated as though it may not be passed on.
-     */
-    case None = 0;
-
     /** Created for use that is not marketing. Must not be passed to a demand source. */
     case NonMarketing = 1;
 
@@ -64,7 +62,16 @@ enum Usage: int
     /** Created for personalized marketing, being targeting related to browsing history. */
     case Personalized = 3;
 
-    /** Decodes the usage from bits 0-2 of a flags byte, as the highest usage granted. */
+    /**
+     * Decodes the usage from bits 0-2 of a flags byte, as the highest usage
+     * granted.
+     *
+     * Bits 0-2 all clear are not a usage. The cloud never writes them, so
+     * such a byte is damaged or forged, and {@see FodId} refuses the
+     * payload with {@see FodIdParseStatus::NoUsage} before this is reached.
+     *
+     * @throws InvalidArgumentException when bits 0-2 are all clear.
+     */
     public static function fromFlags(int $flags): self
     {
         if (($flags & 0b100) !== 0) {
@@ -76,14 +83,15 @@ enum Usage: int
         if (($flags & 0b001) !== 0) {
             return self::NonMarketing;
         }
-        return self::None;
+        throw new InvalidArgumentException(
+            '51Did usage bits are 000, which is not a usage.'
+        );
     }
 
-    /** The cloud's `id.usage` value for this usage, or null for {@see Usage::None}. */
-    public function idUsage(): ?string
+    /** The cloud's `id.usage` value for this usage. */
+    public function idUsage(): string
     {
         return match ($this) {
-            self::None => null,
             self::NonMarketing => 'non-marketing',
             self::Standard => 'standard',
             self::Personalized => 'personalized',

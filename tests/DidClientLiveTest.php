@@ -182,13 +182,13 @@ class DidClientLiveTest extends TestCase
         FodId $fodId,
         Usage $usage,
         ?string $terms,
-        bool $fromConsent
+        bool $usageIsIndirect
     ): void {
         $this->assertSame($usage, $fodId->getUsage(), "$label: usage");
         $this->assertSame(
-            $fromConsent,
-            $fodId->isUsageFromConsent(),
-            "$label: whether the usage came from a consent string"
+            $usageIsIndirect,
+            $fodId->isUsageIndirect(),
+            "$label: whether the usage is indirect"
         );
         $this->assertSame($terms, $fodId->getTerms(), "$label: terms");
         $this->assertSame(
@@ -263,7 +263,7 @@ class DidClientLiveTest extends TestCase
      * above. The first grants all twelve purposes and the second the
      * Appendix 1 standard set of 1, 2, 7, 8 and 11.
      */
-    public function testConsentStringSetsTheUsageFromConsentBit(): void
+    public function testConsentStringSetsTheUsageIsIndirectBit(): void
     {
         $cases = [
             ['AAAAAAAAAAAAAAAAAAAAAAAAAP_w', Usage::Personalized],

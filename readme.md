@@ -172,7 +172,7 @@ $fodId = $result->fodId;
 $type      = $fodId->getType();        // IdType::Probabilistic / Random / HashedEmail
 $usage     = $fodId->getUsage();       // Usage::NonMarketing / Standard / Personalized, the highest granted
 $usage->idUsage();                     // 'non-marketing' / 'standard' / 'personalized', the cloud's id.usage value
-$consented = $fodId->isUsageFromConsent(); // whether the usage came from a consent string
+$indirect  = $fodId->isUsageIndirect(); // whether the issuer worked the usage out rather than the caller stating it
 $licenseId = $fodId->getLicenseId();
 $matchKey  = $fodId->getMatchKey();    // SHA-256 or GUID bytes, see type
 $terms     = $fodId->getTerms();       // address of the terms document it
@@ -198,11 +198,12 @@ report, so code written against them keeps working.
 where the identifier may go. One created for `Usage::NonMarketing` must
 never be passed to a demand source, and one created for `Usage::Standard`
 or `Usage::Personalized` may be passed only to a recipient that has
-accepted the applicable terms. `Usage::None` means no usage bit is set at
-all, which the cloud never issues, so such an identifier came from
-somewhere else or is damaged and should be treated as one that may not be
-passed on. `idUsage()` gives the cloud's `id.usage` value for the same
-answer, being `non-marketing`, `standard` or `personalized`.
+accepted the applicable terms. There are exactly three usages. A payload
+with no usage bit set at all is not a fourth one. The cloud never issues
+such an identifier, so it is damaged or forged, and reading it is refused
+with `FodIdParseStatus::NoUsage`. `idUsage()` gives the cloud's
+`id.usage` value for the same answer, being `non-marketing`, `standard`
+or `personalized`.
 
 Read the usage only through `getUsage()`. The three usages are cumulative
 in the flags byte rather than exclusive, as non-marketing sets bit 0,
@@ -214,10 +215,15 @@ decision. `getUsage()` answers with the highest usage granted, so that
 mistake cannot be made, and this is why the raw flags byte, the byte
 offsets and the raw count of minutes in the date are no longer offered.
 
-`isUsageFromConsent()` says whether the usage was worked out from an IAB
-consent string the caller sent rather than stated by the caller directly.
-Both are legitimate ways to arrive at a usage and the answer says nothing
-about which usage it is.
+`isUsageIndirect()` says whether the usage is indirect, being worked out
+by the issuer from a signal other than the caller stating it, or direct,
+being stated by the caller. A consent string is the only indirect signal
+today, so today the answer is true only when the usage was derived from an
+IAB consent string the caller sent. Both are legitimate ways to arrive at a
+usage and the answer says nothing about which usage it is. The method was
+called `isUsageFromConsent()` in earlier releases and was renamed with no
+alias, following
+[specifications pull request 30](https://github.com/51Degrees/specifications/pull/30).
 
 ## Reading versus verifying
 
@@ -259,6 +265,8 @@ things the payload can get wrong are this package's own
 | `AbsentNode` | OWID | The marker for an absent OWID, a single zero byte, which is well formed and is not an identifier |
 | `PayloadTooShort` | this package | The payload holds fewer than the 5 header bytes, so the type cannot be read |
 | `InvalidTypePayloadLength` | this package | The header names a type whose match key the payload is too short to hold, being 16 bytes after the header for Random and 32 for Probabilistic or HashedEmail |
+| `UnsupportedPayloadVersion` | this package | Bits 4 and 5 of the flags byte name a payload layout version other than 0, so no field is read |
+| `NoUsage` | this package | Bits 0 to 2 of the flags byte are all clear, so the identifier states no usage. The cloud never writes that, so the identifier is damaged or forged |
 
 Both enums are string backed with the cross language name of the status,
 so `$result->status->value` can be logged or carried between services
@@ -393,6 +401,10 @@ try {
     }
     $redeemed->signature;            // SignatureOutcome
     $redeemed->factors;              // name => FactorOutcome, mismatch only
+                                     // transport, device, browserip,
+                                     // connectionip, asn, platformname,
+                                     // platformversion, browsername,
+                                     // browserversion
     $redeemed->verifiedAt;           // DateTimeImmutable or null
     $redeemed->secondsSinceVerified; // int or null
     $redeemed->statusCode;           // 200, or 503 for Unconfirmed

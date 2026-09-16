@@ -29,8 +29,13 @@ namespace fiftyone\pipeline\did;
  * The outcome of one creator context factor, mapped from the value under
  * that factor's name in the `factors` object the cloud sends on a mismatch
  * or on a partly misconfigured result.
+ *
  * Factor names are `transport`, `device`, `browserip`, `connectionip`,
- * `asn` and `browser`.
+ * `asn`, `platformname`, `platformversion`, `browsername` and
+ * `browserversion`. Cloud release 4.4.38 split the earlier single
+ * `browser` factor into the last four, and no longer sends `browser`. A
+ * version mismatch beside a verified name means an upgrade, whilst a
+ * mismatched name means a different operating system or browser.
  */
 enum FactorOutcome: string
 {
