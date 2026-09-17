@@ -249,7 +249,8 @@ class CreatorContextPageTest extends TestCase
     /**
      * Someone running the demo is interested in the subject, so the page
      * ends with somewhere to go next. The links to 51degrees.com carry
-     * the campaign tags this repository's lint asks for and the source
+     * the five part campaign tags the 51Degrees convention asks for,
+     * which nothing in this repository lints, and the source
      * repositories are given as plain addresses.
      */
     public function testThePageEndsWithFindOutMore(): void
