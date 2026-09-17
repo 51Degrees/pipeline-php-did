@@ -30,12 +30,18 @@ declare(strict_types=1);
  * the identifier to the browser and connection it was created on. This
  * demo runs the flow the way production does, in three steps.
  *
- * 1. Create. The browser calls the json endpoint, which issues a 51Did
- *    for the browser's own connection.
+ * 1. Create. The browser loads the 51Degrees client script, which runs
+ *    the snippets the service asks for, sends what they collected, and
+ *    hands the page the answer with the 51Did in it, created for the
+ *    browser's own connection. The service issues an identifier only
+ *    once those values are in, so a page asking for one by itself is
+ *    told the page has not finished and is given nothing.
  * 2. Verify. The browser calls verify-full, so the cloud observes the
- *    browser's live connection. Everything the cloud concluded, the
- *    signature outcome and the creator context verdict, comes back only
- *    as an encrypted result that the browser cannot read or forge.
+ *    browser's live connection, and sends what the snippets collected
+ *    with the call so that this browser can be compared with the
+ *    creator. Everything the cloud concluded, the signature outcome and
+ *    the creator context verdict, comes back only as an encrypted result
+ *    that the browser cannot read or forge.
  * 3. Redeem. The page hands the encrypted result to this server, which
  *    parses the 51Did, checks its signature offline against the
  *    published keys, then calls redeem through the DidClient with the
