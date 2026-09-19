@@ -18,11 +18,19 @@
 # package and pushes nothing.
 #
 # The version is chosen here by whoever starts the release, so nothing
-# in the tree decides it. The next release is 4.6.0 and not 4.5.1,
-# because 4.5.0 is on Packagist and the release after it removes
-# Usage::None and renames isUsageFromConsent to isUsageIndirect with no
-# alias. Code written against 4.5.0 stops compiling, so the minor place
-# moves.
+# in the tree decides it. The next release is 4.5.1. 4.5.0 is on
+# Packagist.
+#
+# It was going to be 4.6.0, because the release removes Usage::None and
+# renames isUsageFromConsent to isUsageIndirect with no alias, so code
+# written against 4.5.0 stops working. That is a minor change by the
+# usual rule.
+#
+# It ships in the patch place anyway, on James Rosewell's decision of
+# 19 September 2026, because the published documentation is versioned at
+# 4.5 and a minor bump would mean moving it. Whoever cuts this release
+# should say plainly in the release notes that it breaks callers, since
+# the version number no longer says so.
 
 name: Publish
 
