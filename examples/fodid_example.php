@@ -96,7 +96,9 @@ echo '  Domain    : ' . $fodId->getDomain() . "\n";
 echo '  Type      : ' . $fodId->getType()->name . "\n";
 echo '  Usage     : ' . $fodId->getUsage()->name
     . ' (id.usage ' . $fodId->getUsage()->idUsage() . ")\n";
-echo '  Consented : ' . ($fodId->isUsageFromConsent() ? 'true' : 'false')
+// Whether the issuer worked the usage out, today only from a consent
+// string, rather than the caller stating it.
+echo '  Indirect  : ' . ($fodId->isUsageIndirect() ? 'true' : 'false')
     . "\n";
 echo '  LicenseId : ' . $fodId->getLicenseId() . "\n";
 echo '  Match key : ' . bin2hex($fodId->getMatchKey()) . "\n";
@@ -128,7 +130,14 @@ $examples = [
     'not base64 at all'      => 'not a 51Did!',
     'nothing'                => '',
     'a payload of two bytes' => issue($creator, "\x00\x01"),
-    'a Random tag, no GUID'  => issue($creator, chr(1 << 6) . pack('V', 1)),
+    'a Random tag, no GUID'  => issue(
+        $creator,
+        chr((1 << 6) | 0b001) . pack('V', 1)
+    ),
+    'no usage bit set'       => issue(
+        $creator,
+        "\x00" . pack('V', 1) . str_repeat("\x20", 32)
+    ),
 ];
 foreach ($examples as $label => $value) {
     $read = FodId::tryFromBase64($value);

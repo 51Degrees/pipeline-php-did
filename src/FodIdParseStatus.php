@@ -26,14 +26,14 @@ declare(strict_types=1);
 namespace fiftyone\pipeline\did;
 
 /**
- * The two ways a structurally valid OWID can still fail to be a 51Did.
+ * The ways a structurally valid OWID can still fail to be a 51Did.
  *
  * Reading a 51Did is two steps. The OWID library reads the envelope and
  * reports one of its own {@see \SwanCommunity\Owid\ParseStatus} values,
  * which this package passes on unchanged, so a caller sees the library's
  * specific reason and never a generic one. Only when the envelope is sound
- * does this package look inside the payload, and these are the two things
- * the payload can get wrong. Together with the library's statuses they are
+ * does this package look inside the payload, and these are the things the
+ * payload can get wrong. Together with the library's statuses they are
  * the whole vocabulary a {@see FodIdParseResult} can carry.
  *
  * The backing string is the cross language name of the status, the same in
@@ -68,4 +68,13 @@ enum FodIdParseStatus: string
      * rather than absent.
      */
     case UnsupportedPayloadVersion = 'UnsupportedPayloadVersion';
+
+    /**
+     * Bits 0 to 2 of the flags byte are all clear, so the identifier states
+     * no usage at all. The cloud never writes such a byte, so the
+     * identifier is damaged or forged. It is refused rather than read,
+     * because the only safe answer to it is not to pass the identifier on,
+     * and a fourth usage would be one more case every caller has to handle.
+     */
+    case NoUsage = 'NoUsage';
 }

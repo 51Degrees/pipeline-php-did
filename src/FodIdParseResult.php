@@ -65,7 +65,7 @@ final class FodIdParseResult
         public readonly ?FodId $fodId,
         /**
          * {@see ParseStatus::Parsed} on success. Otherwise the OWID
-         * library's reason, unchanged, or one of the two reasons of this
+         * library's reason, unchanged, or one of the reasons of this
          * package.
          */
         public readonly ParseStatus|FodIdParseStatus $status

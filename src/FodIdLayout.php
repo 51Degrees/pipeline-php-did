@@ -37,7 +37,7 @@ namespace fiftyone\pipeline\did;
  *
  * A caller reads a 51Did through the named accessors on {@see FodId},
  * being {@see FodId::getType()}, {@see FodId::getUsage()},
- * {@see FodId::isUsageFromConsent()}, {@see FodId::getLicenseId()} and
+ * {@see FodId::isUsageIndirect()}, {@see FodId::getLicenseId()} and
  * {@see FodId::getMatchKey()}, because every bit now has a name and
  * masking the bits by hand is how the usage gets read the wrong way
  * round. See {@see Usage} for why.

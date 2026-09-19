@@ -16,6 +16,13 @@
 # ignores the source tag, which is not a version number. The workflow can
 # also be run by hand, with a dry run that assembles and checks the
 # package and pushes nothing.
+#
+# The version is chosen here by whoever starts the release, so nothing
+# in the tree decides it. The next release is 4.6.0 and not 4.5.1,
+# because 4.5.0 is on Packagist and the release after it removes
+# Usage::None and renames isUsageFromConsent to isUsageIndirect with no
+# alias. Code written against 4.5.0 stops compiling, so the minor place
+# moves.
 
 name: Publish
 

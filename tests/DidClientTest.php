@@ -65,6 +65,28 @@ class DidClientTest extends TestCase
     /** Start of the first key of the schedule under test. */
     private const T0 = '2026-08-03T00:00:00+00:00';
 
+    /**
+     * The four factors cloud release 4.4.38 reports where it used to
+     * report a single browser factor, in the order the cloud lists them.
+     */
+    private const BROWSER_FACTORS = [
+        'platformname', 'platformversion', 'browsername', 'browserversion',
+    ];
+
+    /**
+     * A redeem `factors` object as cloud release 4.4.38 sends it, holding
+     * an operating system upgrade (a version mismatch beside a verified
+     * name), a different browser (a mismatched name), and one factor the
+     * service could not check.
+     */
+    private const NINE_FACTORS = [
+        'transport' => 'verified', 'device' => 'mismatch',
+        'browserip' => 'verified', 'connectionip' => 'verified',
+        'asn' => 'verified',
+        'platformname' => 'verified', 'platformversion' => 'mismatch',
+        'browsername' => 'mismatch', 'browserversion' => 'misconfigured',
+    ];
+
     /** Recorded transport calls, each with method, url, headers and body. */
     private array $requests = [];
 
@@ -584,7 +606,7 @@ class DidClientTest extends TestCase
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
         // A Reserved type header-only payload parses as a FodId but is
         // shorter than the base for a 32 byte match key.
-        $payload = chr(0b1100_0000)
+        $payload = chr(0b1100_0001)
             . str_repeat("\x00", FodIdLayout::HEADER_LENGTH - 1);
         $fodId = $this->signedAt($inside, $this->keyB, $payload);
         $this->assertFalse($this->client()->verifySignature($fodId));
@@ -676,7 +698,7 @@ class DidClientTest extends TestCase
     {
         $this->queueJson(200, $this->schedule());
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
-        $payload = chr(1 << 6) . pack('V', 1)
+        $payload = chr((1 << 6) | 0b001) . pack('V', 1)
             . str_repeat("\x42", FodIdLayout::GUID_LENGTH);
         $this->assertTrue($this->client()->verifySignature(
             $this->signedAt($inside, $this->keyB, $payload)
@@ -918,9 +940,7 @@ class DidClientTest extends TestCase
         $this->queueJson(200, [
             'signature' => 'verified',
             'context' => 'mismatch',
-            'factors' => ['transport' => 'verified', 'device' => 'mismatch',
-                'browserip' => 'verified', 'connectionip' => 'verified',
-                'asn' => 'verified', 'browser' => 'mismatch'],
+            'factors' => self::NINE_FACTORS,
             'verifiedAt' => '2026-08-07T09:15:32Z',
             'secondsSinceVerified' => 2,
         ]);
@@ -929,7 +949,7 @@ class DidClientTest extends TestCase
         $this->assertSame(SignatureOutcome::Verified, $result->signature);
         $this->assertSame(FactorOutcome::Verified, $result->factors['transport']);
         $this->assertSame(FactorOutcome::Mismatch, $result->factors['device']);
-        $this->assertCount(6, $result->factors);
+        $this->assertCount(9, $result->factors);
         $this->assertSame(
             '2026-08-07T09:15:32Z',
             $result->verifiedAt->format('Y-m-d\TH:i:s\Z')
@@ -937,11 +957,78 @@ class DidClientTest extends TestCase
         $this->assertSame(2, $result->secondsSinceVerified);
         $this->assertSame(200, $result->statusCode);
         $this->assertSame('mismatch', $result->rawContext);
-        $this->assertSame([
-            'transport' => 'verified', 'device' => 'mismatch',
-            'browserip' => 'verified', 'connectionip' => 'verified',
-            'asn' => 'verified', 'browser' => 'mismatch',
-        ], $result->toArray()['factors']);
+        $this->assertSame(
+            self::NINE_FACTORS,
+            $result->toArray()['factors']
+        );
+    }
+
+    /**
+     * Cloud release 4.4.38 split the browser factor into four. Each of the
+     * four is read under its own name with its own outcome, so a version
+     * mismatch beside a verified name (an upgrade) is told apart from a
+     * mismatched name (a different operating system or browser), and a
+     * misconfigured factor stays misconfigured rather than reading as a
+     * mismatch.
+     */
+    public function testRedeemReadsTheFourBrowserFactors(): void
+    {
+        $this->queueJson(200, [
+            'signature' => 'verified',
+            'context' => 'mismatch',
+            'factors' => self::NINE_FACTORS,
+            'verifiedAt' => '2026-08-07T09:15:32Z',
+            'secondsSinceVerified' => 2,
+        ]);
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
+        $this->assertSame(
+            [
+                'transport', 'device', 'browserip', 'connectionip', 'asn',
+                'platformname', 'platformversion', 'browsername',
+                'browserversion',
+            ],
+            array_keys($result->factors)
+        );
+        $this->assertSame(
+            FactorOutcome::Verified,
+            $result->factors['platformname']
+        );
+        $this->assertSame(
+            FactorOutcome::Mismatch,
+            $result->factors['platformversion']
+        );
+        $this->assertSame(
+            FactorOutcome::Mismatch,
+            $result->factors['browsername']
+        );
+        $this->assertSame(
+            FactorOutcome::Misconfigured,
+            $result->factors['browserversion']
+        );
+        $this->assertArrayNotHasKey('browser', $result->factors);
+    }
+
+    /**
+     * A body carrying only the single browser factor that releases before
+     * 4.4.38 sent does not populate any of the four that replaced it, so
+     * an old answer is never read as a verdict on the new factors.
+     */
+    public function testRedeemWithOnlyTheOldBrowserFactorPopulatesNoneOfTheFour(): void
+    {
+        $this->queueJson(200, [
+            'signature' => 'verified',
+            'context' => 'mismatch',
+            'factors' => ['transport' => 'verified', 'device' => 'verified',
+                'browserip' => 'verified', 'connectionip' => 'verified',
+                'asn' => 'verified', 'browser' => 'mismatch'],
+            'verifiedAt' => '2026-08-07T09:15:32Z',
+            'secondsSinceVerified' => 2,
+        ]);
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
+        $this->assertCount(6, $result->factors);
+        foreach (self::BROWSER_FACTORS as $name) {
+            $this->assertArrayNotHasKey($name, $result->factors, $name);
+        }
     }
 
     public function testRedeemedWithoutFactors(): void
@@ -1135,7 +1222,7 @@ class DidClientTest extends TestCase
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
         // A Reserved type header-only payload parses as a FodId but is
         // shorter than the base for a 32 byte match key.
-        $payload = chr(0b1100_0000)
+        $payload = chr(0b1100_0001)
             . str_repeat("\x00", FodIdLayout::HEADER_LENGTH - 1);
         $fodId = $this->signedAt($inside, $this->keyB, $payload);
         $this->assertSame(

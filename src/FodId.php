@@ -60,7 +60,7 @@ use SwanCommunity\Owid\Version;
  * https://github.com/51Degrees/specifications/blob/main/did-specification/package-surface.md
  *
  * Every field is read through a named accessor, being {@see FodId::getType()},
- * {@see FodId::getUsage()}, {@see FodId::isUsageFromConsent()},
+ * {@see FodId::getUsage()}, {@see FodId::isUsageIndirect()},
  * {@see FodId::getLicenseId()} and {@see FodId::getMatchKey()}. The raw flags
  * byte and the byte offsets are not offered, because reading the usage bits
  * by hand gets the answer backwards, as {@see Usage} explains.
@@ -113,6 +113,15 @@ final class FodId
      */
     private const SUPPORTED_PAYLOAD_VERSION = 0;
 
+    /**
+     * Bits 0 to 2 of the flags byte, which carry the usage. A payload with
+     * all three clear is refused.
+     */
+    private const USAGE_MASK = 0b111;
+
+    /** Bit 3 of the flags byte, set when the usage is indirect. */
+    private const USAGE_IS_INDIRECT_MASK = 0b1000;
+
     private Owid $owid;
     private int $flags;
     private int $licenseId;
@@ -130,7 +139,9 @@ final class FodId
      *
      * @throws InvalidArgumentException when the payload is shorter than the
      *                                  header, or than the minimum for its
-     *                                  identifier type.
+     *                                  identifier type, names a payload
+     *                                  version this package does not know,
+     *                                  or has usage bits 000.
      */
     public function __construct(Owid $owid)
     {
@@ -163,8 +174,7 @@ final class FodId
      * the cloud's endpoints normalise the alphabet and the padding.
      *
      * The result carries the OWID library's own status when the envelope
-     * could not be read, and {@see FodIdParseStatus::PayloadTooShort} or
-     * {@see FodIdParseStatus::InvalidTypePayloadLength} when the envelope
+     * could not be read, and a {@see FodIdParseStatus} when the envelope
      * was sound and the payload does not fit a 51Did. Success says nothing
      * about the signature.
      *
@@ -192,10 +202,9 @@ final class FodId
     }
 
     /**
-     * Reads a 51Did from an already-read {@see Owid}, answering
-     * {@see FodIdParseStatus::PayloadTooShort} or
-     * {@see FodIdParseStatus::InvalidTypePayloadLength} rather than raising
-     * when the payload does not fit.
+     * Reads a 51Did from an already-read {@see Owid}, answering with a
+     * {@see FodIdParseStatus} rather than raising when the payload does not
+     * fit.
      */
     public static function tryFromOwid(Owid $owid): FodIdParseResult
     {
@@ -268,7 +277,9 @@ final class FodId
      *
      * @throws InvalidArgumentException when the payload is shorter than the
      *                                  header, or than the minimum for its
-     *                                  identifier type.
+     *                                  identifier type, names a payload
+     *                                  version this package does not know,
+     *                                  or has usage bits 000.
      */
     public static function fromOwid(Owid $owid): self
     {
@@ -344,6 +355,14 @@ final class FodId
         // protects nothing.
         if (self::payloadVersion($flags) !== self::SUPPORTED_PAYLOAD_VERSION) {
             return FodIdParseStatus::UnsupportedPayloadVersion;
+        }
+        // A payload with no usage bit set states no usage at all. The cloud
+        // never writes one, so it is damaged or forged, and it is refused
+        // rather than read, because the only safe answer to it is not to
+        // pass the identifier on. Only 000 is refused. Every other pattern
+        // is read as the highest usage granted.
+        if (($flags & self::USAGE_MASK) === 0) {
+            return FodIdParseStatus::NoUsage;
         }
         $matchKeyLength = self::matchKeyLength(
             IdType::fromFlags($flags),
@@ -423,6 +442,14 @@ final class FodId
                 $status->value
             );
         }
+        if ($status === FodIdParseStatus::NoUsage) {
+            return sprintf(
+                '51Did usage bits are %03b, which is not a usage, so the '
+                . 'payload is refused (%s).',
+                ord($payload[FodIdLayout::FLAGS_OFFSET]) & self::USAGE_MASK,
+                $status->value
+            );
+        }
         if ($status === FodIdParseStatus::PayloadTooShort) {
             return sprintf(
                 '51Did payload must be at least %d bytes and %d were given '
@@ -459,14 +486,19 @@ final class FodId
     }
 
     /**
-     * Whether the usage was derived from an IAB consent string the caller
-     * sent, rather than stated by the caller directly. Bit 3 of the flags
-     * byte. Both are legitimate ways to arrive at a usage, and this says
-     * nothing about which usage it is.
+     * Whether the usage is indirect, being worked out by the issuer from a
+     * signal other than the caller stating it, rather than direct, being
+     * stated by the caller. Bit 3 of the flags byte.
+     *
+     * A consent string is the only indirect signal today, so today this is
+     * true only when the usage was derived from one. The bit records direct
+     * against indirect rather than consent strings as such, so a later
+     * signal of another kind sets it too. Both are legitimate ways to
+     * arrive at a usage, and this says nothing about which usage it is.
      */
-    public function isUsageFromConsent(): bool
+    public function isUsageIndirect(): bool
     {
-        return ($this->flags & 0b1000) !== 0;
+        return ($this->flags & self::USAGE_IS_INDIRECT_MASK) !== 0;
     }
 
     /**
