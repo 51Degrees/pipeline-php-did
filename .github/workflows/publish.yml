@@ -47,6 +47,10 @@ on:
       dryrun:
         type: boolean
         default: false
+      allow-version-bump:
+        description: 'Publish even though the version moves the major or minor place.'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -100,6 +104,33 @@ jobs:
             echo "Tag $version is already published, choose a new version" >&2
             exit 1
           fi
+
+      # The same check the other languages publish through, taken from
+      # common-ci rather than copied here, so there is one rule and not two
+      # that drift apart.
+      - name: Checkout common-ci
+        uses: actions/checkout@v4
+        with:
+          repository: 51Degrees/common-ci
+          path: common-ci
+
+      # Refuses a version that moves the major or minor place unless whoever
+      # dispatched this run asked for it. Pushing a release tag carries no
+      # inputs, so that route can never allow one.
+      #
+      # This release is the case the check exists for. It removes Usage::None
+      # and renames isUsageFromConsent with no alias, which is a minor change
+      # by the usual rule, and it ships in the patch place anyway on James
+      # Rosewell's decision. So the number has to be typed deliberately and
+      # cannot arrive on its own.
+      - name: Refuse a major or minor bump nobody approved
+        shell: pwsh
+        env:
+          ALLOW_VERSION_BUMP: ${{ inputs.allow-version-bump }}
+        run: >-
+          ./common-ci/steps/check-version-bump.ps1
+          -Version '${{ steps.release.outputs.version }}'
+          -RepoName '.'
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
