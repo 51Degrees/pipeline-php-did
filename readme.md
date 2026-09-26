@@ -400,7 +400,9 @@ try {
         // Presented from the browser and connection it was created on.
     }
     $redeemed->signature;            // SignatureOutcome
-    $redeemed->factors;              // name => FactorOutcome, mismatch only
+    $redeemed->factors;              // name => FactorOutcome, Verified,
+                                     // Mismatch, Misconfigured or
+                                     // NotRecorded, on a mismatch
                                      // transport, device, browserip,
                                      // connectionip, asn, platformname,
                                      // platformversion, browsername,
@@ -423,6 +425,12 @@ status, and `RuntimeException` when the cloud cannot be reached. A
 `ContextOutcome::Unreadable` and the raw value stays on `rawContext`.
 Every cryptographic failure comes back as the one word `unreadable`, by
 design, so the client does not try to distinguish them either.
+
+Neither `FactorOutcome::Misconfigured` nor `FactorOutcome::NotRecorded`
+is a mismatch, and neither must ever be read as one, but they say
+different things, because `Misconfigured` means the checking service could
+not determine the factor whilst `NotRecorded` means the creating service
+recorded no value for it, so the identifier says nothing about it.
 
 `verify()` and `redeem()` also take the identifier as a string, in either
 alphabet. The client reads the string with `FodId::tryFromBase64()` first

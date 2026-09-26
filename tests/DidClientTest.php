@@ -1009,6 +1009,92 @@ class DidClientTest extends TestCase
     }
 
     /**
+     * A factor the creating service recorded no value for reads as
+     * {@see FactorOutcome::NotRecorded}, which is its own outcome and
+     * neither a mismatch nor misconfigured, so the three sit side by side
+     * in one answer without being confused for each other.
+     */
+    public function testRedeemReadsANotRecordedFactorAsItsOwnOutcome(): void
+    {
+        $factors = [
+            'transport' => 'notrecorded', 'device' => 'verified',
+            'browserip' => 'mismatch', 'connectionip' => 'verified',
+            'asn' => 'misconfigured',
+            'platformname' => 'verified',
+            'platformversion' => 'notrecorded',
+            'browsername' => 'verified', 'browserversion' => 'verified',
+        ];
+        $this->queueJson(200, [
+            'signature' => 'verified',
+            'context' => 'mismatch',
+            'factors' => $factors,
+        ]);
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
+        $this->assertSame(
+            FactorOutcome::NotRecorded,
+            $result->factors['transport']
+        );
+        $this->assertSame(
+            FactorOutcome::NotRecorded,
+            $result->factors['platformversion']
+        );
+        $this->assertSame(
+            FactorOutcome::Mismatch,
+            $result->factors['browserip']
+        );
+        $this->assertSame(
+            FactorOutcome::Misconfigured,
+            $result->factors['asn']
+        );
+        $this->assertSame(
+            FactorOutcome::Verified,
+            $result->factors['device']
+        );
+        $this->assertNotSame(
+            FactorOutcome::Mismatch,
+            $result->factors['transport'],
+            'a factor with no recorded value is not a mismatch'
+        );
+        $this->assertNotSame(
+            FactorOutcome::Misconfigured,
+            $result->factors['transport'],
+            'a factor with no recorded value is not misconfigured'
+        );
+        $this->assertSame($factors, $result->toArray()['factors']);
+    }
+
+    /**
+     * A factor value the package does not know still reads as a mismatch,
+     * so adding notrecorded has not turned an unexpected word into a pass
+     * or into an outcome that says nothing was checked.
+     */
+    public function testRedeemReadsAnUnknownFactorValueAsAMismatch(): void
+    {
+        $this->queueJson(200, [
+            'signature' => 'verified',
+            'context' => 'mismatch',
+            'factors' => ['transport' => 'somethingnewer'],
+        ]);
+        $result = $this->client()->redeem($this->someId(), 'SEALED', 'C');
+        $this->assertSame(
+            FactorOutcome::Mismatch,
+            $result->factors['transport']
+        );
+    }
+
+    /** Every outcome carries the cloud's own word for itself. */
+    public function testTheFactorOutcomesAreTheWordsTheCloudWrites(): void
+    {
+        $this->assertSame(
+            ['verified', 'mismatch', 'misconfigured', 'notrecorded'],
+            array_map(
+                static fn (FactorOutcome $o): string => $o->value,
+                FactorOutcome::cases()
+            )
+        );
+    }
+
+    /**
      * A body carrying only the single browser factor that releases before
      * 4.4.38 sent does not populate any of the four that replaced it, so
      * an old answer is never read as a verdict on the new factors.
