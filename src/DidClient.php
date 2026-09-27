@@ -459,10 +459,11 @@ final class DidClient
     /**
      * Fetches first where the keys held cannot answer for the moment, and
      * says whether it did. The whole list is fetched when none is held yet
-     * or it is more than a day old. The entries from the newest start held
-     * are fetched, at most once a minute, when the moment is within the
-     * boundary tolerance of the end of the keys held, or the last answer
-     * held no keys at all. Otherwise no request is made.
+     * or it is more than a day old. At most once a minute, the entries from
+     * the newest start held are fetched when the moment is within the
+     * boundary tolerance of the end of the keys held, and the whole list is
+     * fetched when the last answer held no keys at all. Otherwise no
+     * request is made.
      */
     private function fetchFor(DateTimeImmutable $at): bool
     {
