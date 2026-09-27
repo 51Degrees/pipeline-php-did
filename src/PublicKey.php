@@ -29,9 +29,10 @@ use DateTimeImmutable;
 
 /**
  * One entry of the 51Did signing key schedule as the cloud publishes it.
- * A key is in force from {@see PublicKey::$startsAt} until the next key
- * starts, so the spacing between entries is whatever the schedule was built
- * with rather than a fixed period.
+ * A key is in force from {@see PublicKey::$startsAt} until
+ * {@see PublicKey::$endsAt}, the next key's start, or until the next key
+ * starts where the cloud sent no end. The spacing between entries is
+ * whatever the schedule was built with rather than a fixed period.
  */
 final class PublicKey
 {
@@ -41,9 +42,20 @@ final class PublicKey
     /** The public key in Subject Public Key Info (SPKI) PEM form. */
     public readonly string $pem;
 
-    public function __construct(DateTimeImmutable $startsAt, string $pem)
-    {
+    /**
+     * When the key stops being in force, or null where the cloud sent no
+     * end. This is the scheduled end, because a key may be replaced before
+     * it, and the cloud then moves the end to the replacement's start.
+     */
+    public readonly ?DateTimeImmutable $endsAt;
+
+    public function __construct(
+        DateTimeImmutable $startsAt,
+        string $pem,
+        ?DateTimeImmutable $endsAt = null
+    ) {
         $this->startsAt = $startsAt;
         $this->pem = $pem;
+        $this->endsAt = $endsAt;
     }
 }
