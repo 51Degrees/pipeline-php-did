@@ -494,7 +494,9 @@ class DidClientTest extends TestCase
             ['startsAt' => ' ', 'publicKey' => $this->keyA->publicKeyPem()],
             ['startsAt' => 'now', 'publicKey' => $this->keyA->publicKeyPem()],
             ['startsAt' => 'x', 'publicKey' => $this->keyA->publicKeyPem()],
-            // An end is read as strictly as a start, and never precedes it.
+            // An end is read as strictly as a start, and comes after it.
+            ['startsAt' => self::T0, 'endsAt' => self::T0,
+                'publicKey' => $this->keyA->publicKeyPem()],
             ['startsAt' => self::T0, 'endsAt' => 123,
                 'publicKey' => $this->keyA->publicKeyPem()],
             ['startsAt' => self::T0, 'endsAt' => '',
@@ -547,9 +549,6 @@ class DidClientTest extends TestCase
             'publicKey' => $newer->publicKeyPem(),
         ];
         $this->queueJson(200, $schedule);
-        // A fetch for a date the keys held do not reach waits a minute
-        // after the last fetch.
-        $this->now += self::refetchInterval();
         $later = self::shift($t0, 3 * self::WEEK + 60);
         $key = $client->publicKeyFor($this->signedAt($later, $newer));
         $this->assertCount(2, $this->requests);
@@ -558,14 +557,11 @@ class DidClientTest extends TestCase
 
     public function testPublicKeyForAnswersADateBeforeTheSchedule(): void
     {
-        // A fetch asks only for entries from the newest start held, so it
-        // can never bring a key older than the schedule. A minute on, so
-        // the absence of a request is this rule and not the minute between
-        // fetches.
+        // The whole list holds every key published, so no fetch can find
+        // a key for a date before its first.
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $client->publicKeys();
-        $this->now += self::refetchInterval();
         $before = self::shift(self::at(self::T0), -self::WEEK);
         $this->assertNull($client->publicKeyFor($this->signedAt($before, $this->keyA)));
         $this->assertCount(1, $this->requests);
@@ -744,18 +740,23 @@ class DidClientTest extends TestCase
     public function testALaterAnswerWithAnEndReplacesTheEntryWithout(): void
     {
         $t0 = self::at(self::T0);
-        $t1 = self::shift($t0, self::WEEK);
         $t2 = self::shift($t0, 2 * self::WEEK);
         $t3 = self::shift($t0, 3 * self::WEEK);
+        // Held without ends, with C ahead of its start.
+        $this->now = $t2->getTimestamp() - 2 * 3600;
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $client->publicKeys();
-        // The daily refresh asks for the entries from C's start, and the
-        // answer carries C's end.
-        $this->now += DidClient::KEY_LIST_MAX_AGE_SECONDS + 1;
+        // A date within the tolerance of C's start, where the keys held
+        // stop, asks for the entries from that start, and the answer
+        // carries C's end.
+        $at = self::shift($t2, -self::tolerance());
+        $this->now = $at->getTimestamp();
         $this->queueJson(200, [self::entry($t2, $this->keyC, $t3)]);
-        $inside = self::shift($t1, 3600);
-        $client->publicKeyFor($this->signedAt($inside, $this->keyB));
+        $this->assertSame(
+            $this->keyB->publicKeyPem(),
+            $client->publicKeyFor($this->signedAt($at, $this->keyB))->pem
+        );
         $this->assertCount(2, $this->requests);
         $this->assertSame(
             $t2->getTimestamp(),
@@ -771,8 +772,8 @@ class DidClientTest extends TestCase
         );
         // The keys held now reach C's end, so a date in C's period makes no
         // request, where C's start alone would have been reached.
-        $this->now += self::refetchInterval();
         $inC = self::shift($t2, 3600);
+        $this->now = $inC->getTimestamp();
         $this->assertSame(
             $this->keyC->publicKeyPem(),
             $client->publicKeyFor($this->signedAt($inC, $this->keyC))->pem
@@ -832,7 +833,10 @@ class DidClientTest extends TestCase
             $client->verifySignatureDetailed($oldKey)
         );
         $this->assertCount(3, $this->requests);
-        // One signed with B before the replacement still verifies.
+        // One signed with B before the replacement still verifies, and so
+        // does one dated inside the tolerance after the replacement starts,
+        // where B stays a neighbouring candidate as the cloud's own
+        // selection has it.
         $before = self::shift($replacedAt, -2 * 3600);
         $this->assertSame(
             SignatureCheck::Verified,
@@ -840,19 +844,149 @@ class DidClientTest extends TestCase
                 $this->signedAt($before, $this->keyB)
             )
         );
+        $justAfter = self::shift($replacedAt, self::tolerance() - 60);
+        $this->assertSame(
+            SignatureCheck::Verified,
+            $client->verifySignatureDetailed(
+                $this->signedAt($justAfter, $this->keyB)
+            )
+        );
         $this->assertCount(3, $this->requests);
+    }
+
+    public function testTheFetchAfterAFailureAsksFromTheKeyForTheDate(): void
+    {
+        // Held without ends, with C ahead of its start, so the newest start
+        // held is C's and not the start of B, the key for the date.
+        $this->queueJson(200, $this->schedule());
+        $client = $this->client();
+        $client->publicKeys();
+        $t1 = self::shift(self::at(self::T0), self::WEEK);
+        $t2 = self::shift($t1, self::WEEK);
+        $replacedAt = self::shift($t1, 6 * 3600);
+        $replacement = Crypto::new();
+        $at = self::shift($replacedAt, 2 * 3600);
+        $this->now = $at->getTimestamp();
+        // Asking from B's start brings B's moved end and its replacement.
+        $this->queueJson(200, [
+            self::entry($t1, $this->keyB, $replacedAt),
+            self::entry($replacedAt, $replacement, $t2),
+        ]);
+        $this->assertSame(
+            SignatureCheck::Verified,
+            $client->verifySignatureDetailed(
+                $this->signedAt($at, $replacement)
+            )
+        );
+        $this->assertCount(2, $this->requests);
+        $this->assertSame(
+            $t1->getTimestamp(),
+            self::datetimeOf($this->lastRequest())
+        );
+    }
+
+    public function testOnlyTheDailyRefreshFetchesTheWholeList(): void
+    {
+        $t0 = self::at(self::T0);
+        $t1 = self::shift($t0, self::WEEK);
+        $t2 = self::shift($t0, 2 * self::WEEK);
+        $t3 = self::shift($t0, 3 * self::WEEK);
+        $primedAt = $t2->getTimestamp() - DidClient::KEY_LIST_MAX_AGE_SECONDS
+            + 300;
+        $this->now = $primedAt;
+        $this->queueJson(200, $this->startedSchedule());
+        $client = $this->client();
+        $client->publicKeys();
+        // Just before the list is a day old, a date past the end of B asks
+        // for the entries from B's start.
+        $this->now = $primedAt + DidClient::KEY_LIST_MAX_AGE_SECONDS - 10;
+        $at = self::at('@' . $this->now);
+        $this->queueJson(200, [
+            self::entry($t1, $this->keyB, $t2),
+            self::entry($t2, $this->keyC, $t3),
+        ]);
+        $fodId = $this->signedAt($at, $this->keyC);
+        $this->assertSame(
+            $this->keyC->publicKeyPem(),
+            $client->publicKeyFor($fodId)->pem
+        );
+        $this->assertSame(
+            $t1->getTimestamp(),
+            self::datetimeOf($this->requests[1])
+        );
+        // That fetch left the age alone, so the whole list is fetched when
+        // the day is up, and the minute since that fetch does not hold it
+        // back.
+        $this->now += 11;
+        $this->queueJson(200, [
+            self::entry($t0, $this->keyA, $t1),
+            self::entry($t1, $this->keyB, $t2),
+            self::entry($t2, $this->keyC, $t3),
+        ]);
+        $client->publicKeyFor($fodId);
+        $this->assertCount(3, $this->requests);
+        $this->assertNull(self::datetimeOf($this->requests[2]));
+        // The whole list resets the age, so a lookup an hour later makes
+        // no request.
+        $this->now += 3600;
+        $client->publicKeyFor($fodId);
+        $this->assertCount(3, $this->requests);
+    }
+
+    public function testTheDailyRefreshPicksUpAReplacedKeyStillTrusted(): void
+    {
+        // Held without ends, with C ahead of its start. B is replaced part
+        // way through its period after the list was fetched.
+        $this->queueJson(200, $this->schedule());
+        $client = $this->client();
+        $client->publicKeys();
+        $t0 = self::at(self::T0);
+        $t1 = self::shift($t0, self::WEEK);
+        $t2 = self::shift($t0, 2 * self::WEEK);
+        $replacedAt = self::shift($t1, 6 * 3600);
+        $replacement = Crypto::new();
+        $at = self::shift($replacedAt, 2 * 3600);
+        $oldKey = $this->signedAt($at, $this->keyB);
+        // Until the list is a day old, a 51Did signed with B after the
+        // replacement still verifies with the keys held.
+        $this->now = $at->getTimestamp();
+        $this->assertSame(
+            SignatureCheck::Verified,
+            $client->verifySignatureDetailed($oldKey)
+        );
+        $this->assertCount(1, $this->requests);
+        // The daily fetch of the whole list brings B's moved end and its
+        // replacement, and the same 51Did is then refused.
+        $this->now = $t1->getTimestamp()
+            + DidClient::KEY_LIST_MAX_AGE_SECONDS + 1;
+        $this->queueJson(200, [
+            self::entry($t0, $this->keyA, $t1),
+            self::entry($t1, $this->keyB, $replacedAt),
+            self::entry($replacedAt, $replacement, $t2),
+        ]);
+        $this->assertSame(
+            SignatureCheck::Invalid,
+            $client->verifySignatureDetailed($oldKey)
+        );
+        $this->assertCount(2, $this->requests);
+        $this->assertNull(self::datetimeOf($this->lastRequest()));
+        $this->assertSame(
+            SignatureCheck::Verified,
+            $client->verifySignatureDetailed(
+                $this->signedAt($at, $replacement)
+            )
+        );
+        $this->assertCount(2, $this->requests);
     }
 
     public function testAFailureOutsideTheKeysHeldMakesNoRequest(): void
     {
         // Just before the first key, which the tolerance makes a candidate
-        // although no key held is in force. A fetch asks only for entries
-        // from the newest start held, so it could not bring a key for this
-        // date.
+        // although no key held starts by then. With no key for the date
+        // there is no replacement to ask for.
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $client->publicKeys();
-        $this->now += self::refetchInterval();
         $before = self::shift(self::at(self::T0), -(self::tolerance() - 60));
         $this->assertSame(
             SignatureCheck::Invalid,
@@ -865,6 +999,9 @@ class DidClientTest extends TestCase
 
     public function testAnEmptyListIsFetchedAgainAtMostOnceAMinute(): void
     {
+        // An empty answer has no end, so the next lookup fetches again,
+        // with no datetime because no start is held, and the one after
+        // waits a minute.
         $this->queueJson(200, []);
         $client = $this->client();
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
@@ -873,29 +1010,34 @@ class DidClientTest extends TestCase
             SignatureCheck::NoKeyForDate,
             $client->verifySignatureDetailed($fodId)
         );
+        $this->queueJson(200, []);
+        $this->assertSame(
+            SignatureCheck::NoKeyForDate,
+            $client->verifySignatureDetailed($fodId)
+        );
+        $this->assertCount(2, $this->requests);
+        $this->assertNull(self::datetimeOf($this->lastRequest()));
         $this->now += 30;
         $this->assertSame(
             SignatureCheck::NoKeyForDate,
             $client->verifySignatureDetailed($fodId)
         );
-        $this->assertCount(1, $this->requests);
-        // A minute on, the list is fetched again, with no datetime because
-        // no start is held, and the keys now published verify.
+        $this->assertCount(2, $this->requests);
+        // A minute on, the keys now published verify.
         $this->now += self::refetchInterval();
         $this->queueJson(200, $this->schedule());
         $this->assertSame(
             SignatureCheck::Verified,
             $client->verifySignatureDetailed($fodId)
         );
-        $this->assertCount(2, $this->requests);
-        $this->assertNull(self::datetimeOf($this->lastRequest()));
+        $this->assertCount(3, $this->requests);
     }
 
     public function testAFailedFetchAlsoWaitsTheMinute(): void
     {
-        // The time of a fetch is recorded before the request, so a cloud
-        // that cannot answer is not asked again on every lookup. The
-        // failure itself is raised, as for any key fetch.
+        // The time of a fetch limited to once a minute is recorded before
+        // the request, so a cloud that cannot answer is not asked again on
+        // every lookup. The failure itself is raised, as for any key fetch.
         $t2 = self::shift(self::at(self::T0), 2 * self::WEEK);
         $this->now = $t2->getTimestamp() - 2 * 3600;
         $this->queueJson(200, $this->startedSchedule());
@@ -919,6 +1061,28 @@ class DidClientTest extends TestCase
         $this->assertCount(2, $this->requests);
     }
 
+    public function testAClockSetBackDoesNotHoldAFetchBack(): void
+    {
+        $t2 = self::shift(self::at(self::T0), 2 * self::WEEK);
+        $this->now = $t2->getTimestamp() - 2 * 3600;
+        $this->queueJson(200, $this->startedSchedule());
+        $client = $this->client();
+        $client->publicKeys();
+        $past = $this->signedAt(
+            self::shift($t2, self::tolerance() + 3600),
+            Crypto::new()
+        );
+        $this->queueJson(200, $this->startedSchedule());
+        $client->publicKeyFor($past);
+        $this->assertCount(2, $this->requests);
+        // Set back an hour, so the clock reads before that fetch, and the
+        // next date past the end still fetches.
+        $this->now -= 3600;
+        $this->queueJson(200, $this->startedSchedule());
+        $client->publicKeyFor($past);
+        $this->assertCount(3, $this->requests);
+    }
+
     // ----- Selection -----
 
     public function testPublicKeyForIsTheLatestStartOnOrBeforeTheDate(): void
@@ -935,11 +1099,9 @@ class DidClientTest extends TestCase
             $this->keyB->publicKeyPem(),
             $client->publicKeyFor($this->signedAt($inB, $this->keyB))->pem
         );
-        // A date after the newest start held triggers one refetch once a
-        // minute has passed since the first, and the newest key is still
-        // the answer when the list has not grown.
+        // A date after the newest start held triggers one refetch, and the
+        // newest key is still the answer when the list has not grown.
         $this->queueJson(200, $this->schedule());
-        $this->now += self::refetchInterval();
         $inC = self::shift($t0, 5 * self::WEEK);
         $this->assertSame(
             $this->keyC->publicKeyPem(),
@@ -963,9 +1125,12 @@ class DidClientTest extends TestCase
             $this->signedAt($justAfter, $this->keyA)
         ));
         $wellAfter = self::shift($boundary, $tolerance + 3600);
+        // The failure is checked once more against a fresh answer.
+        $this->queueJson(200, $this->schedule());
         $this->assertFalse($client->verifySignature(
             $this->signedAt($wellAfter, $this->keyA)
         ));
+        $this->assertCount(2, $this->requests);
     }
 
     public function testLaterNeighbourAcceptedWithinToleranceBeforeBoundary(): void
@@ -980,19 +1145,21 @@ class DidClientTest extends TestCase
             $this->signedAt($justBefore, $this->keyB)
         ));
         $wellBefore = self::shift($boundary, -($tolerance + 3600));
+        // The failure is checked once more against a fresh answer.
+        $this->queueJson(200, $this->schedule());
         $this->assertFalse($client->verifySignature(
             $this->signedAt($wellBefore, $this->keyB)
         ));
+        $this->assertCount(2, $this->requests);
     }
 
     public function testNoCandidateBeforeTheSchedule(): void
     {
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
-        // Primed, and a minute on, so the request count below shows that
-        // a date nothing covers is answered from the keys held.
+        // Primed, so the request count below shows that a date nothing
+        // covers is answered from the keys held.
         $client->publicKeys();
-        $this->now += self::refetchInterval();
         $tolerance = self::tolerance();
         // Far enough before the first key that the tolerance does not
         // reach the date, so nothing in the schedule can have signed it.
@@ -1670,7 +1837,6 @@ class DidClientTest extends TestCase
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $client->publicKeys();
-        $this->now += self::refetchInterval();
         $before = self::shift(
             self::at(self::T0), -(self::tolerance() + 3600)
         );
@@ -1691,7 +1857,6 @@ class DidClientTest extends TestCase
         $this->queueJson(200, $this->schedule());
         $client = $this->client();
         $client->publicKeys();
-        $this->now += self::refetchInterval();
         $before = self::shift(
             self::at(self::T0), -(self::tolerance() + 3600)
         );
@@ -1724,6 +1889,10 @@ class DidClientTest extends TestCase
     {
         $inside = self::shift(self::at(self::T0), self::WEEK + 3600);
         foreach ([$this->keyB, $this->keyC] as $key) {
+            // An answer for the first fetch, and one for the check a
+            // failure makes once more on the second call.
+            $this->responses = [];
+            $this->queueJson(200, $this->schedule());
             $this->queueJson(200, $this->schedule());
             $client = $this->client();
             $fodId = $this->signedAt($inside, $key);

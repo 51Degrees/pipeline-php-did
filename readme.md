@@ -422,7 +422,8 @@ at most once a minute, asking only for entries from the newest start it
 holds and keeping the older ones. Where the cloud sends no `endsAt`, the
 newest start held counts as the end. A key may be replaced before its
 `endsAt`, and the client picks up the replacement on the first signature
-that fails with the keys it holds, or at the next daily refresh.
+that fails with the keys it holds, or at the next daily refresh, which
+fetches the whole list.
 `PublicKey::$endsAt` carries the end, or null where the cloud sent none.
 
 `redeem()` returns a `RedeemResult` for a 200 and for a 503 (context
