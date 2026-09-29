@@ -38,8 +38,8 @@ use Throwable;
  * Client for every manipulation of a 51Did a server needs against the
  * 51Degrees cloud, so server code never hand-writes HTTP or key handling.
  *
- * 1. Fetches the signing public keys once, caches them, and picks the key
- *    in force when a given 51Did was created ({@see DidClient::publicKeys()}
+ * 1. Fetches the signing public keys, holds them, and picks the key in
+ *    force when a given 51Did was created ({@see DidClient::publicKeys()}
  *    and {@see DidClient::publicKeyFor()}).
  * 2. Verifies a 51Did's signature offline against that key
  *    ({@see DidClient::verifySignature()}).
@@ -61,6 +61,15 @@ use Throwable;
  * is written to access logs and the cloud's POST route takes the resource
  * key from the form rather than the path.
  *
+ * The cloud publishes a key only once its period has started or is about
+ * to, and each entry carries `endsAt`, the next key's start. The client
+ * verifies offline until a 51Did is dated within the boundary tolerance
+ * of the newest entry's end, or of its start where the cloud sent no end,
+ * and then fetches the entries from the newest start held, at most once
+ * a minute. A key may be replaced before its `endsAt`, and the client
+ * picks up the replacement on the first signature that fails with the
+ * keys held, or at the next daily fetch of the whole list.
+ *
  * The key list cache is per instance. PHP runs one request per process
  * state, so under a long-running application server the cache lives for
  * the life of the instance, while under the built-in `php -S` server each
@@ -80,10 +89,22 @@ final class DidClient
     /** The Composer package name, sent in the User-Agent. */
     public const PACKAGE_NAME = '51degrees/fiftyone.pipeline.did';
 
-    /** How old the cached key list may be before it is fetched again. */
+    /**
+     * How old the key list may be before the whole list is fetched again.
+     * This bounds how long a key replaced before its scheduled end can
+     * still be trusted offline.
+     */
     public const KEY_LIST_MAX_AGE_SECONDS = 24 * 60 * 60;
 
     private const BOUNDARY_TOLERANCE_SECONDS = 15 * 60;
+
+    /**
+     * The shortest gap between fetches made because the keys held end too
+     * soon for a date, or because a signature failed with them, so that a
+     * date nothing is published for yet, or a forged one, cannot make
+     * every lookup call the cloud.
+     */
+    private const REFETCH_INTERVAL_SECONDS = 60;
 
     /**
      * The longest encoded identifier the client sends. This is a guard
@@ -104,9 +125,14 @@ final class DidClient
     private Closure $transport;
     private Closure $clock;
 
-    /** @var PublicKey[]|null */
+    /** @var PublicKey[]|null The keys held, oldest start first. */
     private ?array $keys = null;
+
+    /** When the whole list was last fetched, which sets its age. */
     private int $keysFetchedAt = 0;
+
+    /** When a fetch limited to once a minute last started, or null. */
+    private ?int $refetchedAt = null;
 
     /**
      * @param string $resourceKey The page's resource key, public by nature.
@@ -181,10 +207,12 @@ final class DidClient
     }
 
     /**
-     * The signing public keys the cloud publishes, fetched on first use and
-     * then answered from the cache. Keys are published up to three months
-     * ahead of their start, so the list holds entries that are not yet in
-     * force.
+     * The signing public keys held, oldest start first, fetched on first
+     * use and then answered from the cache. The cloud publishes a key only
+     * once its period has started or is about to, so the newest entry is
+     * normally the key in force. Each later fetch is merged in without
+     * dropping older entries, because 51Dids made long ago verify against
+     * them.
      *
      * @return PublicKey[]
      *
@@ -195,7 +223,7 @@ final class DidClient
     public function publicKeys(): array
     {
         if ($this->keys === null) {
-            $this->fetchKeys();
+            $this->fetchKeys(null);
         }
         return $this->keys;
     }
@@ -203,12 +231,14 @@ final class DidClient
     /**
      * The key in force when the identifier was created, being the entry
      * whose start is latest on or before the identifier's date, or null when
-     * the date precedes the whole schedule.
+     * there is no such entry or that entry had ended by then.
      *
-     * The list is fetched again, once, before answering when there is no
-     * entry on or before the date, when the date is later than the newest
-     * start held, or when the list is more than a day old. Otherwise the
-     * answer comes from the cache.
+     * The whole list is fetched again before answering when it is more
+     * than a day old. The entries from the newest start held are fetched
+     * first, at most once a minute, when the date is within the boundary
+     * tolerance of the end of the keys held, being the newest entry's end
+     * or, where the cloud sent none, its start. Otherwise the answer comes
+     * from the keys held.
      *
      * @throws CloudException when the key endpoint answers other than 200.
      * @throws RuntimeException when the cloud cannot be reached.
@@ -216,7 +246,8 @@ final class DidClient
     public function publicKeyFor(FodId $fodId): ?PublicKey
     {
         $at = $fodId->getDate();
-        return self::inForceAt($this->keysCovering($at), $at);
+        $this->fetchFor($at);
+        return self::inForceAt($this->keys, $at);
     }
 
     /**
@@ -234,11 +265,16 @@ final class DidClient
      *    the first that verifies answers true.
      *    Every earlier key is never tried, because one leaked key from any
      *    past period could then sign identifiers dated today.
-     * 4. No candidate, meaning the date precedes the whole schedule,
-     *    answers false. {@see DidClient::verifySignatureDetailed()}
-     *    says which of the five cases it was, and
-     *    {@see DidClient::publicKeyFor()} returning null says the same
-     *    for this one case.
+     * 4. When none verifies, this call fetched nothing, and a key held
+     *    starts on or before the date, the entries from the newest such
+     *    key's start are fetched, at most once a minute, and the
+     *    candidates tried once more, because that key may have been
+     *    replaced before its scheduled end.
+     * 5. No candidate, meaning no key held was in force within the
+     *    boundary tolerance of the date, answers false.
+     *    {@see DidClient::verifySignatureDetailed()} says which of the
+     *    five cases it was, and {@see DidClient::publicKeyFor()}
+     *    returning null says the same for this one case.
      *
      * @throws CloudException when the key endpoint answers other than 200.
      * @throws RuntimeException when the cloud cannot be reached.
@@ -292,17 +328,18 @@ final class DidClient
             return SignatureCheck::InvalidLength;
         }
         $at = $fodId->getDate();
-        $keys = $this->keysCovering($at);
-        $candidates = self::candidatesFor($keys, $at);
-        if ($candidates === []) {
-            return SignatureCheck::NoKeyForDate;
-        }
-        foreach ($candidates as $key) {
-            if ($fodId->verify($key->pem)) {
-                return SignatureCheck::Verified;
+        $fetched = $this->fetchFor($at);
+        $check = self::checkWith($this->keys, $fodId, $at);
+        if ($check === SignatureCheck::Invalid && !$fetched) {
+            // The key held for the date may have been replaced before its
+            // scheduled end, and the entries from its start carry the
+            // replacement. A list fetched for this call cannot be better.
+            $held = self::newestStartedBy($this->keys, $at);
+            if ($held !== null && $this->refetch($held->startsAt)) {
+                $check = self::checkWith($this->keys, $fodId, $at);
             }
         }
-        return SignatureCheck::Invalid;
+        return $check;
     }
 
     /**
@@ -420,43 +457,80 @@ final class DidClient
     }
 
     /**
-     * The key list to select from for the given moment, applying the
-     * refetch rule of {@see DidClient::publicKeyFor()} once.
-     *
-     * @return PublicKey[]
+     * Fetches first where the keys held cannot answer for the moment, and
+     * says whether it did. The whole list is fetched when none is held yet
+     * or it is more than a day old. At most once a minute, the entries from
+     * the newest start held are fetched when the moment is within the
+     * boundary tolerance of the end of the keys held, and the whole list is
+     * fetched when the last answer held no keys at all. Otherwise no
+     * request is made.
      */
-    private function keysCovering(DateTimeImmutable $at): array
+    private function fetchFor(DateTimeImmutable $at): bool
     {
-        if ($this->keys === null) {
-            $this->fetchKeys();
-            return $this->keys;
+        if ($this->keys === null
+            || ($this->clock)() - $this->keysFetchedAt
+                > self::KEY_LIST_MAX_AGE_SECONDS
+        ) {
+            $this->fetchKeys(null);
+            return true;
         }
-        $now = ($this->clock)();
-        $stale = ($now - $this->keysFetchedAt) > self::KEY_LIST_MAX_AGE_SECONDS;
-        $newest = self::newestStart($this->keys);
-        $refetch = $stale
-            || self::inForceAt($this->keys, $at) === null
-            || ($newest !== null && $at->getTimestamp() > $newest);
-        if ($refetch) {
-            $this->fetchKeys();
+        $end = self::heldUntil($this->keys);
+        if ($end === null
+            || $at->getTimestamp() + self::BOUNDARY_TOLERANCE_SECONDS >= $end
+        ) {
+            return $this->refetch(self::newest($this->keys)?->startsAt);
         }
-        return $this->keys;
+        return false;
     }
 
     /**
-     * Fetches the key list from `GET {endpoint}id/key/{resource}`. Each
-     * entry's start is `startsAt`, or the compatibility field `created`
-     * when `startsAt` is absent. `weekStart` is ignored.
+     * Fetches the entries from the start given, or the whole list where
+     * there is none, unless a fetch made here started less than a minute
+     * ago, and says whether it fetched. The time is recorded before the
+     * request, so a failed fetch holds the next one back too.
+     */
+    private function refetch(?DateTimeImmutable $since): bool
+    {
+        $now = ($this->clock)();
+        if ($this->refetchedAt !== null) {
+            $elapsed = $now - $this->refetchedAt;
+            // A clock set back is no reason to stop fetching, so only a
+            // recent fetch in the past holds the next one back.
+            if ($elapsed >= 0 && $elapsed < self::REFETCH_INTERVAL_SECONDS) {
+                return false;
+            }
+        }
+        $this->refetchedAt = $now;
+        $this->fetchKeys($since);
+        return true;
+    }
+
+    /**
+     * Fetches the key list from `GET {endpoint}id/key/{resource}` and merges
+     * it into the keys held. A start given goes as `datetime`, so the answer
+     * holds the entry with that start and any later ones. Without one the
+     * whole list is fetched, which also resets the list's age. Each entry's
+     * start is `startsAt`, or the compatibility field `created` when
+     * `startsAt` is absent, and its end is `endsAt` where present.
+     * `weekStart` is ignored.
      *
      * @throws CloudException when the endpoint answers other than 200.
      * @throws RuntimeException when the answer is not a JSON array or any
      *     entry is malformed.
      */
-    private function fetchKeys(): void
+    private function fetchKeys(?DateTimeImmutable $since): void
     {
+        $query = [];
+        if ($since !== null) {
+            $query['datetime'] = gmdate(
+                'Y-m-d\TH:i:s\Z',
+                $since->getTimestamp()
+            );
+        }
         $response = $this->request(
             'GET',
-            'id/key/' . rawurlencode($this->resourceKey)
+            'id/key/' . rawurlencode($this->resourceKey),
+            $query
         );
         if ($response['status'] !== 200) {
             throw new CloudException(
@@ -507,29 +581,75 @@ final class DidClient
                     "Key list entry {$index} has no string publicKey."
                 );
             }
-            $startsAt = self::parseStart($start);
+            $startsAt = self::parseMoment($start);
             if ($startsAt === null) {
                 throw new RuntimeException(
                     "Key list entry {$index} has an invalid start: {$start}"
                 );
             }
-            $keys[] = new PublicKey($startsAt, $pem);
+            $end = $entry->endsAt ?? null;
+            $endsAt = null;
+            if ($end !== null) {
+                if (!is_string($end)) {
+                    throw new RuntimeException(
+                        "Key list entry {$index} has an endsAt that is not "
+                        . 'a string.'
+                    );
+                }
+                $endsAt = self::parseMoment($end);
+                if ($endsAt === null) {
+                    throw new RuntimeException(
+                        "Key list entry {$index} has an invalid endsAt: {$end}"
+                    );
+                }
+                if ($endsAt <= $startsAt) {
+                    throw new RuntimeException(
+                        "Key list entry {$index} does not end after it "
+                        . 'starts.'
+                    );
+                }
+            }
+            $keys[] = new PublicKey($startsAt, $pem, $endsAt);
         }
-        $this->keys = $keys;
-        $this->keysFetchedAt = ($this->clock)();
+        $this->keys = self::merge($this->keys ?? [], $keys);
+        if ($since === null) {
+            $this->keysFetchedAt = ($this->clock)();
+        }
     }
 
     /**
-     * Reads the moment a key comes into force from the ISO 8601 form the
-     * cloud writes, being a date, a `T`, a time with optional fractional
-     * seconds, and then `Z` or a numeric offset. Anything else is refused,
-     * because the date constructor turns an empty string, a space, `now`
-     * and other loose words into the current time, which would put a key
-     * that never existed at the head of the schedule.
+     * The keys held with an answer merged in by start, oldest first. An
+     * entry in the answer replaces the held entry with the same start,
+     * because a later answer may carry an end the earlier one did not, or
+     * an end moved earlier where the key was replaced. Held entries the
+     * answer leaves out are kept, because 51Dids made long ago verify
+     * against them.
+     *
+     * @param PublicKey[] $held
+     * @param PublicKey[] $answer
+     * @return PublicKey[]
+     */
+    private static function merge(array $held, array $answer): array
+    {
+        $byStart = [];
+        foreach (array_merge($held, $answer) as $key) {
+            $byStart[$key->startsAt->getTimestamp()] = $key;
+        }
+        ksort($byStart);
+        return array_values($byStart);
+    }
+
+    /**
+     * Reads a key's start or end from the ISO 8601 form the cloud writes,
+     * being a date, a `T`, a time with optional fractional seconds, and
+     * then `Z` or a numeric offset. Anything else is refused, because the
+     * date constructor turns an empty string, a space, `now` and other
+     * loose words into the current time, which would put a key that never
+     * existed at the head of the schedule.
      *
      * @return DateTimeImmutable|null Null when the value is not that form.
      */
-    private static function parseStart(string $value): ?DateTimeImmutable
+    private static function parseMoment(string $value): ?DateTimeImmutable
     {
         $iso = '/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?'
             . '(Z|[+-]\\d{2}:?\\d{2})$/';
@@ -545,11 +665,31 @@ final class DidClient
 
     /**
      * The entry in force at the moment, being the newest whose start has
-     * passed, or null when the moment precedes every entry.
+     * passed, or null when the moment precedes every entry or that entry
+     * had ended by then.
      *
      * @param PublicKey[] $keys
      */
     private static function inForceAt(
+        array $keys,
+        DateTimeImmutable $at
+    ): ?PublicKey {
+        $best = self::newestStartedBy($keys, $at);
+        if ($best !== null && $best->endsAt !== null
+            && $best->endsAt->getTimestamp() <= $at->getTimestamp()
+        ) {
+            return null;
+        }
+        return $best;
+    }
+
+    /**
+     * The newest entry whose start is on or before the moment, whether or
+     * not it has ended, or null when the moment precedes every entry.
+     *
+     * @param PublicKey[] $keys
+     */
+    private static function newestStartedBy(
         array $keys,
         DateTimeImmutable $at
     ): ?PublicKey {
@@ -601,19 +741,60 @@ final class DidClient
     }
 
     /**
+     * The outcome of trying the candidate keys for the moment from the
+     * list given.
+     *
      * @param PublicKey[] $keys
-     * @return int|null The newest start as a Unix timestamp, or null.
      */
-    private static function newestStart(array $keys): ?int
+    private static function checkWith(
+        array $keys,
+        FodId $fodId,
+        DateTimeImmutable $at
+    ): SignatureCheck {
+        $candidates = self::candidatesFor($keys, $at);
+        if ($candidates === []) {
+            return SignatureCheck::NoKeyForDate;
+        }
+        foreach ($candidates as $key) {
+            if ($fodId->verify($key->pem)) {
+                return SignatureCheck::Verified;
+            }
+        }
+        return SignatureCheck::Invalid;
+    }
+
+    /**
+     * @param PublicKey[] $keys
+     * @return PublicKey|null The entry with the latest start, or null.
+     */
+    private static function newest(array $keys): ?PublicKey
     {
         $newest = null;
         foreach ($keys as $key) {
-            $start = $key->startsAt->getTimestamp();
-            if ($newest === null || $start > $newest) {
-                $newest = $start;
+            if ($newest === null
+                || $key->startsAt->getTimestamp()
+                    > $newest->startsAt->getTimestamp()
+            ) {
+                $newest = $key;
             }
         }
         return $newest;
+    }
+
+    /**
+     * Where the keys held stop, as a Unix timestamp, being the newest
+     * entry's end, or its start where the cloud sent no end. Null when no
+     * keys are held.
+     *
+     * @param PublicKey[] $keys
+     */
+    private static function heldUntil(array $keys): ?int
+    {
+        $newest = self::newest($keys);
+        if ($newest === null) {
+            return null;
+        }
+        return ($newest->endsAt ?? $newest->startsAt)->getTimestamp();
     }
 
     /**

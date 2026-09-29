@@ -63,7 +63,9 @@ declare(strict_types=1);
  * instance, which is one more use each time the list is fetched. Under
  * PHP's built-in server every request starts afresh, so this demo
  * fetches the list on every redemption, whereas an application server
- * keeping one client alive fetches it once a day.
+ * keeping one client alive fetches it once a day, once as each key nears
+ * its end, and at most once a minute while 51Dids arrive that fail their
+ * signature or are dated past the keys it holds.
  *
  * Uses the 51Did package from this repository (PHP 8.1 or later), so run
  * `composer install` at the repository root first, then from this folder
