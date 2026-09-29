@@ -375,9 +375,10 @@ if (!$read->ok) {
 $fodId = $read->fodId;
 
 // 2. Verify the signature offline. The client fetches the published
-//    signing keys once, caches them for a day, and tries the key in force
-//    when the identifier was created plus a neighbouring key where the
-//    date sits close to a key boundary. Version 3 envelopes only.
+//    signing keys, refreshes them at least once a day, and tries the key
+//    in force when the identifier was created plus a neighbouring key
+//    where the date sits close to a key boundary. Version 3 envelopes
+//    only.
 $genuine = $client->verifySignature($fodId);
 $key = $client->publicKeyFor($fodId);   // null when no key covers the date
 
@@ -400,7 +401,9 @@ try {
         // Presented from the browser and connection it was created on.
     }
     $redeemed->signature;            // SignatureOutcome
-    $redeemed->factors;              // name => FactorOutcome, mismatch only
+    $redeemed->factors;              // name => FactorOutcome, Verified,
+                                     // Mismatch, Misconfigured or
+                                     // NotRecorded, on a mismatch
                                      // transport, device, browserip,
                                      // connectionip, asn, platformname,
                                      // platformversion, browsername,
@@ -413,6 +416,18 @@ try {
 }
 ```
 
+The cloud publishes a signing key only once its period has started or is
+about to, and each entry in the key list carries `endsAt`, the moment the
+next key takes over. The client verifies offline until a 51Did is dated
+close to the end of the newest key it holds, then fetches the list again,
+at most once a minute, asking only for entries from the newest start it
+holds and keeping the older ones. Where the cloud sends no `endsAt`, the
+newest start held counts as the end. A key may be replaced before its
+`endsAt`, and the client picks up the replacement on the first signature
+that fails with the keys it holds, or at the next daily refresh, which
+fetches the whole list.
+`PublicKey::$endsAt` carries the end, or null where the cloud sent none.
+
 `redeem()` returns a `RedeemResult` for a 200 and for a 503 (context
 `Unconfirmed`, so retry). It throws `InvalidArgumentException` with the
 cloud's message when the 51Did was malformed (400),
@@ -423,6 +438,12 @@ status, and `RuntimeException` when the cloud cannot be reached. A
 `ContextOutcome::Unreadable` and the raw value stays on `rawContext`.
 Every cryptographic failure comes back as the one word `unreadable`, by
 design, so the client does not try to distinguish them either.
+
+Neither `FactorOutcome::Misconfigured` nor `FactorOutcome::NotRecorded`
+is a mismatch, and neither must ever be read as one, but they say
+different things, because `Misconfigured` means the checking service could
+not determine the factor whilst `NotRecorded` means the creating service
+recorded no value for it, so the identifier says nothing about it.
 
 `verify()` and `redeem()` also take the identifier as a string, in either
 alphabet. The client reads the string with `FodId::tryFromBase64()` first
@@ -609,7 +630,9 @@ signature with `verify` is one use. The offline signature check in the
 demo's `/redeem` fetches the public key list, one more use each time, and
 under PHP's built-in server that is every redemption because each request
 starts afresh, whereas an application server keeping one `DidClient`
-alive fetches the list once a day.
+alive fetches the list once a day, once as each key nears its end, and at
+most once a minute while 51Dids arrive that fail their signature or are
+dated past the keys it holds.
 
 ### The copy-and-paste proof
 
