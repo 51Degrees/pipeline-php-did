@@ -403,7 +403,8 @@ try {
     $redeemed->signature;            // SignatureOutcome
     $redeemed->factors;              // name => FactorOutcome, Verified,
                                      // Mismatch, Misconfigured or
-                                     // NotRecorded, on a mismatch
+                                     // NotRecorded, when the cloud sends
+                                     // them (see below), for
                                      // transport, device, browserip,
                                      // connectionip, asn, platformname,
                                      // platformversion, browsername,
@@ -417,12 +418,14 @@ try {
 ```
 
 The cloud publishes a signing key only once its period has started or is
-about to, and each entry in the key list carries `endsAt`, the moment the
-next key takes over. The client verifies offline until a 51Did is dated
-close to the end of the newest key it holds, then fetches the list again,
-at most once a minute, asking only for entries from the newest start it
-holds and keeping the older ones. Where the cloud sends no `endsAt`, the
-newest start held counts as the end. A key may be replaced before its
+within fifteen minutes of starting, and each entry in the key list carries
+`startsAt` and `endsAt`, the moment the next key takes over, the newest
+entry included although the next key is not yet published. The client
+verifies offline until a 51Did is dated close to the end of the newest key
+it holds, then fetches the list again, at most once a minute, asking only
+for entries from the newest start it holds and keeping the older ones.
+Where a service sends no `endsAt`, the newest start held counts as the
+end. A key may be replaced before its
 `endsAt`, and the client picks up the replacement on the first signature
 that fails with the keys it holds, or at the next daily refresh, which
 fetches the whole list.
@@ -439,11 +442,16 @@ status, and `RuntimeException` when the cloud cannot be reached. A
 Every cryptographic failure comes back as the one word `unreadable`, by
 design, so the client does not try to distinguish them either.
 
-Neither `FactorOutcome::Misconfigured` nor `FactorOutcome::NotRecorded`
-is a mismatch, and neither must ever be read as one, but they say
-different things, because `Misconfigured` means the checking service could
-not determine the factor whilst `NotRecorded` means the creating service
-recorded no value for it, so the identifier says nothing about it.
+`factors` arrives on a mismatch, on a misconfigured result where the
+transport was compared, and whenever any factor is `NotRecorded`, whatever
+the overall result. Neither `FactorOutcome::Misconfigured` nor
+`FactorOutcome::NotRecorded` is a mismatch, and neither must ever be read
+as one, but they say different things, because `Misconfigured` means the
+checking service could not determine the factor whilst `NotRecorded` means
+the creating service recorded no value for it, so the identifier says
+nothing about it. A `NotRecorded` factor is left out of the overall result,
+so `ContextOutcome::Verified` can arrive beside factors that are
+`NotRecorded`, and the factors then say how many the verdict rests on.
 
 `verify()` and `redeem()` also take the identifier as a string, in either
 alphabet. The client reads the string with `FodId::tryFromBase64()` first
