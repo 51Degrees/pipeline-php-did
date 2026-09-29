@@ -51,6 +51,15 @@ enum FactorOutcome: string
     case Misconfigured = 'misconfigured';
 
     /**
+     * The service that created the identifier recorded no value for this
+     * factor, so the identifier says nothing about it and there was nothing
+     * to compare. This is neither a mismatch nor
+     * {@see FactorOutcome::Misconfigured}, which says the checking service
+     * could not determine the factor.
+     */
+    case NotRecorded = 'notrecorded';
+
+    /**
      * Maps the cloud's factor string, answering
      * {@see FactorOutcome::Mismatch} for anything not known (fail closed).
      */
