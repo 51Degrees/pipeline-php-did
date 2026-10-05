@@ -25,7 +25,7 @@
     },
     "repositories": [
         {
-            "comment": "Consume the 51Degrees fork of owid-php from the local git submodule. Switch to Packagist once owid-php is published upstream.",
+            "comment": "Take OWID from the owid-php git submodule, a checkout of SWAN-community/owid-php. Switch to Packagist once swan-community/owid is published there.",
             "type": "path",
             "url": "./owid-php"
         }

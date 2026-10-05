@@ -121,8 +121,8 @@ match key, which the reader keeps in the payload and does not interpret.
 PHP **>= 8.1**, because the OWID library requires it and 7.4 is end of life.
 `FodId` builds on the OWID envelope library
 ([SWAN-community/owid-php](https://github.com/SWAN-community/owid-php), package
-`swan-community/owid`), taken from the `51Degrees/owid-php` fork. `Owid` is
-`final`, so `FodId` **composes** it rather than subclassing.
+`swan-community/owid`). `Owid` is `final`, so `FodId` **composes** it rather
+than subclassing.
 
 That library is not on Packagist, so it reaches you one of two ways.
 
