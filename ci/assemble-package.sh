@@ -43,7 +43,7 @@ out="$1"
 owid_commit="$(git -C owid-php rev-parse HEAD)" || fail \
     "cannot read the commit of the owid-php submodule"
 owid_url="$(git -C owid-php config --get remote.origin.url || true)"
-[ -n "$owid_url" ] || owid_url="https://github.com/51Degrees/owid-php"
+[ -n "$owid_url" ] || owid_url="https://github.com/SWAN-community/owid-php"
 
 rm -rf "$out"
 mkdir -p "$out"
