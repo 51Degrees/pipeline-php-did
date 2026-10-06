@@ -629,7 +629,7 @@ final class FodId
      */
     public function verify(string $publicPem): bool
     {
-        return $this->owid->verifyWithPublicKey($publicPem, []);
+        return $this->owid->verifyWithPublicKey($publicPem);
     }
 
     /**
@@ -641,6 +641,6 @@ final class FodId
      */
     public function signatureStatus(string $publicPem): SignatureStatus
     {
-        return $this->owid->signatureStatus($publicPem, []);
+        return $this->owid->signatureStatus($publicPem);
     }
 }
