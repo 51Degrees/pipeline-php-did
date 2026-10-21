@@ -58,6 +58,9 @@ jobs:
         env:
           _51DEGREES_RESOURCE_KEY_BASIC: ${{ vars._51DEGREES_RESOURCE_KEY_BASIC }}
           _51DEGREES_RESOURCE_KEY_BESPOKE: ${{ secrets._51DEGREES_RESOURCE_KEY_BESPOKE }}
+          # Read by the test's redeem half, which otherwise sends no license
+          # key and leaves the server-side license check unexercised.
+          _51DEGREES_LICENSE_KEY: ${{ secrets._51DEGREES_LICENSE_KEY_51DID }}
         run: |
           $keys = Get-ChildItem env: |
             Where-Object { $_.Name -like '_51DEGREES_RESOURCE_KEY*' -and $_.Value }
@@ -69,7 +72,8 @@ jobs:
           foreach ($k in $keys) {
             Write-Host "::group::DidClientLiveTest with $($k.Name)"
             $env:_51DEGREES_RESOURCE_KEY = $k.Value
-            php vendor/bin/phpunit tests/DidClientLiveTest.php
+            Write-Host "License key set: $([bool]$env:_51DEGREES_LICENSE_KEY)"
+            php vendor/bin/phpunit --testdox tests/DidClientLiveTest.php
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             Write-Host '::endgroup::'
           }
