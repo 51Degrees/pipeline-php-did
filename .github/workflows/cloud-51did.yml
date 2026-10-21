@@ -58,6 +58,11 @@ jobs:
         env:
           _51DEGREES_RESOURCE_KEY_BASIC: ${{ vars._51DEGREES_RESOURCE_KEY_BASIC }}
           _51DEGREES_RESOURCE_KEY_BESPOKE: ${{ secrets._51DEGREES_RESOURCE_KEY_BESPOKE }}
+          _51DEGREES_RESOURCE_KEY_51DID: ${{ vars._51DEGREES_RESOURCE_KEY_51DID }}
+          # The service only opens a sealed result for a license key of the
+          # account whose resource key sealed it, so each license key is
+          # passed only with the resource key of the same suffix.
+          _51DEGREES_LICENSE_KEY_51DID: ${{ secrets._51DEGREES_LICENSE_KEY_51DID }}
         run: |
           $keys = Get-ChildItem env: |
             Where-Object { $_.Name -like '_51DEGREES_RESOURCE_KEY*' -and $_.Value }
@@ -69,7 +74,10 @@ jobs:
           foreach ($k in $keys) {
             Write-Host "::group::DidClientLiveTest with $($k.Name)"
             $env:_51DEGREES_RESOURCE_KEY = $k.Value
-            php vendor/bin/phpunit tests/DidClientLiveTest.php
+            $licenseName = $k.Name -replace '^_51DEGREES_RESOURCE_KEY', '_51DEGREES_LICENSE_KEY'
+            $env:_51DEGREES_LICENSE_KEY = [Environment]::GetEnvironmentVariable($licenseName)
+            Write-Host "License key: $(if ($env:_51DEGREES_LICENSE_KEY) { $licenseName } else { 'none' })"
+            php vendor/bin/phpunit --testdox tests/DidClientLiveTest.php
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             Write-Host '::endgroup::'
           }

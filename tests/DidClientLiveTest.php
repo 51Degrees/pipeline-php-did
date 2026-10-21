@@ -31,6 +31,7 @@ use fiftyone\pipeline\did\FodId;
 use fiftyone\pipeline\did\IdType;
 use fiftyone\pipeline\did\Usage;
 use fiftyone\pipeline\did\NotSupportedException;
+use fiftyone\pipeline\did\SignatureOutcome;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -61,14 +62,16 @@ class DidClientLiveTest extends TestCase
     /**
      * Creates a 51Did through the cloud `json` endpoint, which is not part
      * of the client because the identifier describes the caller's own
-     * connection.
+     * connection. Evidence given is sent with the request.
+     *
+     * @param array<string, string> $evidence
      */
-    private function create(): FodId
+    private function create(array $evidence = []): FodId
     {
         $url = $this->client->getEndpoint() . 'json?' . http_build_query([
             'resource' => $this->resource,
             'id.usage' => 'non-marketing',
-        ]) . '&values=FODiD.IdProbGlobal&values=FODiD.IdProbLic';
+        ] + $evidence) . '&values=FODiD.IdProbGlobal&values=FODiD.IdProbLic';
         $context = stream_context_create(['http' => [
             'header' => "User-Agent: fiftyone-pipeline-did-php-tests\r\n",
             'ignore_errors' => true,
@@ -121,6 +124,83 @@ class DidClientLiveTest extends TestCase
         }
         $this->assertSame(200, $result->statusCode);
         $this->assertSame(ContextOutcome::Unreadable, $result->context);
+    }
+
+    /**
+     * The factors a verdict reports, written out because they are the
+     * service's contract with every one of these packages.
+     */
+    private const FACTORS = [
+        'transport', 'device', 'browserip', 'connectionip', 'asn',
+        'platformname', 'platformversion', 'browsername', 'browserversion',
+    ];
+
+    /**
+     * Has the cloud seal a creator context result for a 51Did, standing in
+     * for the browser call the client does not carry, and redeems it. The
+     * service only opens the result for a license key of the resource
+     * key's account, so without one it must answer unreadable and with one
+     * it must answer a verdict.
+     */
+    public function testRedeemSealedResultReadsVerdictWithLicenseKey(): void
+    {
+        // A browser User-Agent unlike the one verify-context sees below, so
+        // the factors move and the verdict reports every one of them.
+        $fodId = $this->create(['user-agent' =>
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+            . 'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
+            . 'Mobile/15E148 Safari/604.1']);
+        $challenge = bin2hex(random_bytes(16));
+        $url = $this->client->getEndpoint() . 'id/verify-context/'
+            . rawurlencode($this->resource) . '?' . http_build_query([
+                '51did' => $fodId->asBase64(),
+                'challenge' => $challenge,
+            ]);
+        $context = stream_context_create(['http' => [
+            'header' => "User-Agent: fiftyone-pipeline-did-php-tests\r\n",
+            'ignore_errors' => true,
+        ]]);
+        $body = @file_get_contents($url, false, $context);
+        $this->assertNotFalse($body, 'No response from verify-context.');
+        $sealed = json_decode($body, true)['result'] ?? null;
+        if (!is_string($sealed)) {
+            $this->markTestSkipped(
+                'verify-context returned no sealed result, so the host holds '
+                . 'no creator context secret: ' . substr($body, 0, 200)
+            );
+        }
+
+        try {
+            $result = $this->client->redeem($fodId, $sealed, $challenge);
+        } catch (NotSupportedException $exception) {
+            $this->markTestSkipped(
+                'The host does not offer the creator context.'
+            );
+        }
+
+        if (!$this->client->hasLicenceKey()) {
+            $this->assertSame(
+                ContextOutcome::Unreadable,
+                $result->context,
+                'Without a license key the sealed result cannot be read: '
+                . $result->raw
+            );
+            return;
+        }
+        $this->assertNotSame(
+            ContextOutcome::Unreadable,
+            $result->context,
+            'The license key must read the sealed result, so it belongs to '
+            . 'the resource key\'s account and carries 51Did: ' . $result->raw
+        );
+        $this->assertSame(
+            SignatureOutcome::Verified, $result->signature, $result->raw);
+        $this->assertNotNull($result->factors, $result->raw);
+        $names = array_keys($result->factors);
+        sort($names);
+        $expected = self::FACTORS;
+        sort($expected);
+        $this->assertSame($expected, $names, $result->raw);
     }
     /**
      * The versioned Model Terms for Marketing document a marketing 51Did is
