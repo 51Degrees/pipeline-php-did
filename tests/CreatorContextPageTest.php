@@ -259,7 +259,7 @@ class CreatorContextPageTest extends TestCase
         $this->assertIsString($page);
         $this->assertStringContainsString('Find out more', $page);
         $this->assertStringContainsString(
-            'utm_campaign=pipeline-php-did',
+            'utm_campaign=51degrees-php',
             $page
         );
         $this->assertStringContainsString(
