@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> This package is developed in the monorepo https://github.com/51Degrees/51degrees-php, under `pipeline/did/`. The repository `pipeline-php-did` is now the read-only Packagist mirror of `51degrees/fiftyone.pipeline.did`, published from the monorepo from version 4.5.203. Please refer to the monorepo for issues and PRs.
+
 # 51Degrees Pipeline 51Did (PHP)
 
 Strongly typed PHP reader for the 51Did (51Degrees Identifier) returned by the
