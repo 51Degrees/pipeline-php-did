@@ -263,7 +263,7 @@ class CreatorContextPageTest extends TestCase
             $page
         );
         $this->assertStringContainsString(
-            'https://github.com/51Degrees/pipeline-php-did',
+            'https://github.com/51Degrees/51degrees-php/tree/main/pipeline/did',
             $page
         );
     }

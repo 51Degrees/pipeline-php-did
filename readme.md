@@ -137,7 +137,7 @@ That library is not on Packagist, so it reaches you one of two ways.
   submodule and consumes it through a Composer `path` repository, because the
   library is maintained upstream and not here.
 
-[How a release is assembled](https://github.com/51Degrees/pipeline-php-did/blob/main/ci/README.md)
+[How a release is assembled](https://github.com/51Degrees/51degrees-php/blob/main/pipeline/did/ci/README.md)
 covers how the published tree is built and why the two arrangements
 differ.
 
