@@ -15,6 +15,12 @@
     ],
     "license": "EUPL-1.2",
     "type": "library",
+    "homepage": "https://51degrees.com/developers/51did?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=homepage",
+    "support":
+    {
+        "source": "https://github.com/51Degrees/51degrees-php",
+        "docs": "https://51degrees.com/documentation/_identifiers_51_did.html?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=documentation"
+    },
     "require": {
         "php": ">=8.1",
         "ext-json": "*",

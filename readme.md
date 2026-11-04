@@ -664,3 +664,10 @@ the same context and may still verify.
 The `examples-main.min.css` vendored beside `page.html` is the 51Degrees
 examples design system build and is refreshed by common-ci's
 `update-example-assets` step.
+
+## Find out more
+
+- [51Did](https://51degrees.com/developers/51did?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=find-out-more-51did)
+- [51Did documentation](https://51degrees.com/documentation/_identifiers_51_did.html?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=find-out-more-documentation)
+- [51Did inspector](https://51degrees.com/developers/51did-inspector?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=find-out-more-51did-inspector)
+- https://github.com/51Degrees/51degrees-php
