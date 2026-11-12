@@ -3,6 +3,8 @@
 
 # 51Degrees Pipeline 51Did (PHP)
 
+![51Degrees](https://raw.githubusercontent.com/51Degrees/51degrees-php/main/.github/images/logo-160.png "Data rewards the curious")
+
 Strongly typed PHP reader for the 51Did (51Degrees Identifier) returned by the
 51Degrees Cloud service, and a client for the cloud's 51Did endpoints so a
 server never hand-writes HTTP or key handling. Mirrors the .NET `FiftyOne.Did`
@@ -163,8 +165,10 @@ use fiftyone\pipeline\did\IdType;
 // A value from outside may be anything at all, so reading answers rather
 // than raising. Either base64 alphabet is accepted, standard as the cloud
 // issues it or URL-safe as a page puts it in a link, with or without
-// padding, and surrounding whitespace such as a trailing newline is
-// ignored. A null, an empty string or an array is reported, not raised.
+// padding, and white space around it such as a trailing newline is
+// ignored. A value with white space inside it, or with characters from
+// both alphabets, is refused. A null, an empty string or an array is
+// reported, not raised.
 $result = FodId::tryFromBase64($_GET['51did'] ?? null);
 if (!$result->ok) {
     // $result->status names the reason and is safe to log.
@@ -258,9 +262,9 @@ things the payload can get wrong are this package's own
 | Status | From | Meaning |
 | --- | --- | --- |
 | `Parsed` | OWID | A 51Did in a sound envelope. Says nothing about the signature |
-| `MissingInput` | OWID | Nothing was given, being null, an empty string or whitespace only |
+| `MissingInput` | OWID | Nothing was given, being null, an empty string or white space only |
 | `InvalidInputType` | OWID | Not a string, for example the array PHP builds when a query parameter repeats with brackets |
-| `InvalidBase64` | OWID | The text is not base64, so there are no bytes to read |
+| `InvalidBase64` | OWID | The text is not base64 in one alphabet, so there are no bytes to read. White space inside the text, and characters from both alphabets, report this |
 | `UnsupportedVersion` | OWID | The first byte names an envelope version the library does not know |
 | `UnexpectedEnd` | OWID | The bytes stop part way through a field, before the payload length was read |
 | `InvalidDomainEncoding` | OWID | The creator domain has no terminator within the length a domain name can hold |
@@ -352,7 +356,7 @@ key (for `idproblic`) or across all callers (for `idprobglobal`).
 the cloud. Build one at start-up with the page's resource key, the
 account's licence key (server side only, needed to redeem where the
 account holds licence keys) and, optionally, the API base. When the base
-is not given the client reads `FOD_CLOUD_API_URL`, the same variable the
+is not given the client reads `_51DEGREES_CLOUD_ENDPOINT`, the same variable the
 cloud request engine honours, and falls back to
 `https://cloud.51degrees.com/api/v4/`. A value with or without a trailing
 slash is accepted. Credentials never travel in a URL. The key list and
@@ -495,8 +499,8 @@ vendor/bin/phpunit
 ```
 
 The `Live` suite calls the cloud and is skipped unless
-`_51DEGREES_RESOURCE_KEY` (or the legacy `RESOURCE_KEY`) is set, with
-`_51DEGREES_LICENSE_KEY` and `FOD_CLOUD_API_URL` read as the demo reads
+`_51DEGREES_RESOURCE_KEY` is set, with
+`_51DEGREES_LICENSE_KEY` and `_51DEGREES_CLOUD_ENDPOINT` read as the demo reads
 them. Each live test costs uses against the subscription behind the key.
 
 ## Creator context demo
@@ -614,9 +618,9 @@ carrying any other.
 
 | Variable | Meaning |
 | --- | --- |
-| `_51DEGREES_RESOURCE_KEY` | Required. The resource key of your account, public by nature. The legacy `RESOURCE_KEY` is read when the aligned name is not set |
-| `_51DEGREES_LICENSE_KEY` | Optional. A licence key of the same account, server side only. The legacy `LICENSE_KEY` is read when the aligned name is not set. Only an account that holds licence keys needs one to redeem, so an account holding none runs without it |
-| `FOD_CLOUD_API_URL` | Optional. The cloud API base including the `/api/v4/` segment, defaulting to `https://cloud.51degrees.com/api/v4/`. This is the same variable the cloud request engine honours. A host other than `cloud.51degrees.com` would be used to (a) use an on premise web server, or (b) use a privately hosted version of the 51Degrees cloud for performance reasons. This is the private hosting option of the cloud service. Both run the same service, so the demo works unchanged against either |
+| `_51DEGREES_RESOURCE_KEY` | Required. The resource key of your account, public by nature |
+| `_51DEGREES_LICENSE_KEY` | Optional. A licence key of the same account, server side only. Only an account that holds licence keys needs one to redeem, so an account holding none runs without it |
+| `_51DEGREES_CLOUD_ENDPOINT` | Optional. The cloud API base including the `/api/v4/` segment, defaulting to `https://cloud.51degrees.com/api/v4/`. This is the same variable the cloud request engine honours. A host other than `cloud.51degrees.com` would be used to (a) use an on premise web server, or (b) use a privately hosted version of the 51Degrees cloud for performance reasons. This is the private hosting option of the cloud service. Both run the same service, so the demo works unchanged against either |
 
 ### How to run
 

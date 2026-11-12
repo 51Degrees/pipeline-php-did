@@ -30,6 +30,7 @@ use InvalidArgumentException;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
 use SwanCommunity\Owid\ParseResult;
+use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\SignatureStatus;
 use SwanCommunity\Owid\Version;
 
@@ -94,7 +95,9 @@ use SwanCommunity\Owid\Version;
  * The cloud issues a 51Did in standard base64 with padding, and a page puts
  * one in a link in the URL-safe alphabet without padding, so the base64
  * factories accept either form and {@see FodId::asBase64Url()} produces the
- * URL-safe one.
+ * URL-safe one. White space around the text is ignored, and a text with
+ * white space inside it, or with characters from both alphabets, is
+ * refused, as {@see FodId::toStandardBase64()} explains.
  *
  * The owid-php {@see Owid} is `final`, so this type **composes** an OWID
  * (holds the envelope and delegates OWID-level concerns to it) rather than
@@ -121,6 +124,17 @@ final class FodId
 
     /** Bit 3 of the flags byte, set when the usage is indirect. */
     private const USAGE_IS_INDIRECT_MASK = 0b1000;
+
+    /**
+     * The 25 characters with the Unicode White_Space property, as the
+     * inside of a character class for a pattern with the `u` flag. They
+     * are listed because `trim()` takes only five of them and NUL as well,
+     * `\s` also takes U+180E, and `\p{White_Space}` needs PCRE2 10.40,
+     * which is newer than the one PHP 8.1 bundles.
+     */
+    private const WHITE_SPACE = '\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}'
+        . '\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}'
+        . '\x{3000}';
 
     private Owid $owid;
     private int $flags;
@@ -170,8 +184,10 @@ final class FodId
      * brackets) is reported by status rather than raised. A string in
      * either alphabet is accepted, standard (`+` and `/`, as the cloud
      * issues it) or URL-safe (`-` and `_`, as a page puts it in a link),
-     * with or without padding, and surrounding whitespace is removed, as
-     * the cloud's endpoints normalise the alphabet and the padding.
+     * with or without padding, and white space around it is ignored. A
+     * string with white space inside it, or with characters from both
+     * alphabets, gives {@see ParseStatus::InvalidBase64}, and one of white
+     * space alone gives {@see ParseStatus::MissingInput}.
      *
      * The result carries the OWID library's own status when the envelope
      * could not be read, and a {@see FodIdParseStatus} when the envelope
@@ -184,6 +200,9 @@ final class FodId
     {
         if (is_string($value)) {
             $value = self::toStandardBase64($value);
+            if ($value === null) {
+                return FodIdParseResult::failed(ParseStatus::InvalidBase64);
+            }
         }
         return self::fromEnvelope(Owid::tryFromBase64($value));
     }
@@ -221,31 +240,62 @@ final class FodId
      * one. {@see FodId::tryFromBase64()} answers with a status for the same
      * inputs and is the surface to use for values arriving from outside.
      *
-     * @throws OwidException when the string is not valid base64 or not a
-     *                       valid OWID, with the message naming the OWID
+     * @throws OwidException when the string is not valid base64 in one
+     *                       alphabet, has white space inside it, or is not
+     *                       a valid OWID, with the message naming the OWID
      *                       library's status.
      * @throws InvalidArgumentException when the envelope is sound and the
      *                                  payload does not fit a 51Did.
      */
     public static function fromBase64(string $base64): self
     {
+        $standard = self::toStandardBase64($base64);
+        if ($standard === null) {
+            throw self::envelopeException(ParseStatus::InvalidBase64);
+        }
         return new self(self::envelopeOrThrow(
-            Owid::tryFromBase64(self::toStandardBase64($base64))
+            Owid::tryFromBase64($standard)
         ));
     }
 
     /**
      * Restores a string in either base64 alphabet to the standard alphabet
-     * with padding. Leading and trailing whitespace is removed first, since
-     * a value read from a header, a file or a form often carries a newline
-     * and the padding has to be counted from the characters that remain.
-     * Then `-` becomes `+`, `_` becomes `/`, and `==` or `=` is added when
-     * the length modulo 4 is 2 or 3. A string already in the standard
-     * padded form is returned unchanged.
+     * with padding, or answers null when the string is refused.
+     *
+     * White space before and after the text is removed first, being every
+     * character with the Unicode White_Space property, since a value read
+     * from a header, a file or a form often carries a newline and the
+     * padding has to be counted from the characters that remain. Then `-`
+     * becomes `+`, `_` becomes `/`, and `==` or `=` is added when the
+     * length modulo 4 is 2 or 3. A string already in the standard padded
+     * form is returned unchanged apart from that trim.
+     *
+     * A string with white space inside it, or with a character from each
+     * alphabet such as both `+` and `-`, is refused, as the 51Did
+     * specification requires. The issuer writes neither, so either is a
+     * sign of a damaged value, such as a `+` that a form decoder turned
+     * into a space or a value converted only in part. A string that is not
+     * UTF-8 is refused too, as its bytes cannot all be in the alphabet.
      */
-    public static function toStandardBase64(string $value): string
+    public static function toStandardBase64(string $value): ?string
     {
-        $standard = strtr(trim($value), '-_', '+/');
+        // Trim before anything else, because the padding below is decided
+        // by the length and white space would make that length wrong. The
+        // pattern fails, giving null, on a string that is not UTF-8.
+        $space = '[' . self::WHITE_SPACE . ']';
+        $text = preg_replace(
+            '/\A' . $space . '+|' . $space . '+\z/u',
+            '',
+            $value
+        );
+        if ($text === null || preg_match('/' . $space . '/u', $text) === 1) {
+            return null;
+        }
+        // Checked before the mapping below, which would hide a mix.
+        if (strpbrk($text, '+/') !== false && strpbrk($text, '-_') !== false) {
+            return null;
+        }
+        $standard = strtr($text, '-_', '+/');
         switch (strlen($standard) % 4) {
             case 2:
                 return $standard . '==';
@@ -311,12 +361,21 @@ final class FodId
     private static function envelopeOrThrow(ParseResult $result): Owid
     {
         if (!$result->ok) {
-            throw new OwidException(
-                'The value is not a valid OWID envelope ('
-                . $result->status->value . ').'
-            );
+            throw self::envelopeException($result->status);
         }
         return $result->owid;
+    }
+
+    /**
+     * The exception the throwing factories raise when the envelope could
+     * not be read, naming the OWID library's status.
+     */
+    private static function envelopeException(
+        ParseStatus $status
+    ): OwidException {
+        return new OwidException(
+            'The value is not a valid OWID envelope (' . $status->value . ').'
+        );
     }
 
     /**

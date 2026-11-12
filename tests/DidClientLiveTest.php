@@ -36,9 +36,9 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * Live tests against the cloud, skipped without a resource key in
- * `_51DEGREES_RESOURCE_KEY` (or the legacy `RESOURCE_KEY`). The licence key
- * is read from `_51DEGREES_LICENSE_KEY` (or `LICENSE_KEY`) and the API base
- * from `FOD_CLOUD_API_URL`, the same variables the examples read. Each test
+ * `_51DEGREES_RESOURCE_KEY`. The licence key is read from
+ * `_51DEGREES_LICENSE_KEY` and the API base
+ * from `_51DEGREES_CLOUD_ENDPOINT`, the same variables the examples read. Each test
  * costs uses against the subscription behind the resource key.
  */
 class DidClientLiveTest extends TestCase
@@ -48,14 +48,14 @@ class DidClientLiveTest extends TestCase
 
     protected function setUp(): void
     {
-        $resource = getenv('_51DEGREES_RESOURCE_KEY') ?: getenv('RESOURCE_KEY');
+        $resource = EnvironmentVariable::read('_51DEGREES_RESOURCE_KEY', 'RESOURCE_KEY');
         if (!$resource) {
             $this->markTestSkipped(
                 'Set _51DEGREES_RESOURCE_KEY to run the live tests.'
             );
         }
         $this->resource = $resource;
-        $licence = getenv('_51DEGREES_LICENSE_KEY') ?: getenv('LICENSE_KEY');
+        $licence = EnvironmentVariable::read('_51DEGREES_LICENSE_KEY', 'LICENSE_KEY');
         $this->client = new DidClient($resource, $licence ?: null);
     }
 

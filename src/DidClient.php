@@ -84,6 +84,14 @@ final class DidClient
      * The environment variable read for the API base when the constructor
      * argument is absent, the same one the cloud request engine honours.
      */
+    public const CLOUD_ENDPOINT_VARIABLE = '_51DEGREES_CLOUD_ENDPOINT';
+
+    /**
+     * The environment variable read for the API base when
+     * {@see DidClient::CLOUD_ENDPOINT_VARIABLE} is not set or is empty.
+     *
+     * @deprecated use {@see DidClient::CLOUD_ENDPOINT_VARIABLE}
+     */
     public const ENDPOINT_VARIABLE = 'FOD_CLOUD_API_URL';
 
     /** The Composer package name, sent in the User-Agent. */
@@ -119,6 +127,28 @@ final class DidClient
     /** Seconds the default transport waits for the cloud. */
     private const TIMEOUT_SECONDS = 30;
 
+    /** The characters of a licence key a message may show, from its end. */
+    private const LICENCE_VISIBLE_CHARACTERS = 4;
+
+    /** Stands in for each hidden character of a licence key. */
+    private const LICENCE_MASK_CHARACTER = '*';
+
+    /**
+     * Written to the PHP error log when the API base came from the
+     * deprecated environment variable, which is named first, then the
+     * one that replaces it.
+     */
+    private const OLD_ENDPOINT_VARIABLE_MESSAGE =
+        'The cloud endpoint was read from the environment variable %s, '
+        . 'which is deprecated. %s replaces it, so set that to the same '
+        . 'value.';
+
+    /**
+     * Whether the deprecated variable has been reported since PHP started
+     * the script, which under a web server is since the request began.
+     */
+    private static bool $oldEndpointVariableReported = false;
+
     private string $resourceKey;
     private ?string $licenceKey;
     private string $endpoint;
@@ -139,7 +169,8 @@ final class DidClient
      * @param string|null $licenceKey The account's licence key, server side
      *     only, needed to redeem where the account holds licence keys.
      * @param string|null $endpoint The API base including `/api/v4/`. When
-     *     null the `FOD_CLOUD_API_URL` environment variable is read, then
+     *     null the `_51DEGREES_CLOUD_ENDPOINT` environment variable is read,
+     *     then the deprecated `FOD_CLOUD_API_URL`, then
      *     {@see DidClient::DEFAULT_ENDPOINT}. A value with or without a
      *     trailing slash is normalised to end in exactly one.
      * @param callable|null $transport An HTTP transport for tests, called as
@@ -170,10 +201,8 @@ final class DidClient
             : $licenceKey;
         $base = $endpoint;
         if ($base === null || $base === '') {
-            $fromEnvironment = getenv(self::ENDPOINT_VARIABLE);
-            $base = ($fromEnvironment === false || $fromEnvironment === '')
-                ? self::DEFAULT_ENDPOINT
-                : $fromEnvironment;
+            $base = self::endpointFromEnvironment()
+                ?? self::DEFAULT_ENDPOINT;
         }
         $this->endpoint = rtrim($base, '/') . '/';
         $this->transport = $transport === null
@@ -182,6 +211,36 @@ final class DidClient
         $this->clock = $clock === null
             ? static fn (): int => time()
             : Closure::fromCallable($clock);
+    }
+
+    /**
+     * The API base from the environment, or null when neither variable
+     * holds a value. The deprecated variable is read only when the new
+     * one gives nothing. Its use is written to the PHP error log, because
+     * the package has no logger, once for each time PHP runs the script.
+     * Under a web server that is once in each request that builds a
+     * client from the deprecated variable.
+     */
+    private static function endpointFromEnvironment(): ?string
+    {
+        $new = getenv(self::CLOUD_ENDPOINT_VARIABLE);
+        if ($new !== false && $new !== '') {
+            return $new;
+        }
+        $old = getenv(self::ENDPOINT_VARIABLE);
+        if ($old === false || $old === '') {
+            return null;
+        }
+        if (!self::$oldEndpointVariableReported) {
+            self::$oldEndpointVariableReported = true;
+            error_log(sprintf(
+                self::OLD_ENDPOINT_VARIABLE_MESSAGE,
+                self::ENDPOINT_VARIABLE,
+                self::CLOUD_ENDPOINT_VARIABLE
+            ));
+        }
+
+        return $old;
     }
 
     /** The API base, ending in one slash. */
@@ -380,14 +439,14 @@ final class DidClient
         }
         if ($status === 400) {
             throw new InvalidArgumentException(
-                self::errorsText($json, $response['body'])
+                $this->errorsText($json, $response['body'])
             );
         }
         throw new CloudException(
             $status,
             $response['body'],
             "The verify endpoint answered {$status}: "
-            . self::excerpt($response['body'])
+            . $this->excerpt($response['body'])
         );
     }
 
@@ -439,7 +498,7 @@ final class DidClient
         }
         if ($status === 400) {
             throw new InvalidArgumentException(
-                self::errorsText(json_decode($body, true), $body)
+                $this->errorsText(json_decode($body, true), $body)
             );
         }
         if ($status === 404) {
@@ -452,7 +511,7 @@ final class DidClient
         throw new CloudException(
             $status,
             $body,
-            "The redeem endpoint answered {$status}: " . self::excerpt($body)
+            "The redeem endpoint answered {$status}: " . $this->excerpt($body)
         );
     }
 
@@ -537,7 +596,7 @@ final class DidClient
                 $response['status'],
                 $response['body'],
                 "The key endpoint answered {$response['status']}: "
-                . self::excerpt($response['body'])
+                . $this->excerpt($response['body'])
             );
         }
         try {
@@ -550,7 +609,7 @@ final class DidClient
         } catch (JsonException $exception) {
             throw new RuntimeException(
                 'The key endpoint did not answer with a key list: '
-                . self::excerpt($response['body']),
+                . $this->excerpt($response['body']),
                 0,
                 $exception
             );
@@ -558,7 +617,7 @@ final class DidClient
         if (!is_array($json)) {
             throw new RuntimeException(
                 'The key endpoint did not answer with a key list: '
-                . self::excerpt($response['body'])
+                . $this->excerpt($response['body'])
             );
         }
         $keys = [];
@@ -863,7 +922,14 @@ final class DidClient
             $headers[] = 'Content-Type: application/x-www-form-urlencoded';
             $headers[] = 'Content-Length: ' . strlen($body);
         }
-        $response = ($this->transport)($method, $url, $headers, $body);
+        try {
+            $response = ($this->transport)($method, $url, $headers, $body);
+        } catch (RuntimeException $exception) {
+            // The transport's message may name the licence key.
+            throw new RuntimeException(
+                $this->maskLicence($exception->getMessage())
+            );
+        }
         if (!is_array($response)
             || !isset($response['status'], $response['body'])
             || !is_int($response['status'])
@@ -949,7 +1015,7 @@ final class DidClient
      *
      * @param mixed $json
      */
-    private static function errorsText($json, string $body): string
+    private function errorsText($json, string $body): string
     {
         if (is_array($json) && isset($json['errors'])
             && is_array($json['errors'])
@@ -961,16 +1027,41 @@ final class DidClient
                 }
             }
             if ($messages !== []) {
-                return implode(' ', $messages);
+                return $this->maskLicence(implode(' ', $messages));
             }
         }
-        return self::excerpt($body);
+        return $this->excerpt($body);
+    }
+
+    /**
+     * The text with the licence key, if one was given, replaced by its last
+     * 4 characters preceded by asterisks. A key of 4 characters or fewer is
+     * replaced entirely.
+     */
+    private function maskLicence(string $text): string
+    {
+        if ($this->licenceKey === null) {
+            return $text;
+        }
+
+        $length = strlen($this->licenceKey);
+        $visible = self::LICENCE_VISIBLE_CHARACTERS;
+        $masked = $length <= $visible
+            ? str_repeat(self::LICENCE_MASK_CHARACTER, $length)
+            : str_repeat(self::LICENCE_MASK_CHARACTER, $length - $visible)
+                . substr($this->licenceKey, -$visible);
+
+        return str_replace(
+            [$this->licenceKey, rawurlencode($this->licenceKey)],
+            $masked,
+            $text
+        );
     }
 
     /** The start of a body for a message, so a page of HTML stays short. */
-    private static function excerpt(string $body): string
+    private function excerpt(string $body): string
     {
-        $trimmed = trim($body);
+        $trimmed = $this->maskLicence(trim($body));
         return strlen($trimmed) > 200
             ? substr($trimmed, 0, 200) . '...'
             : $trimmed;

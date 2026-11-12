@@ -1085,6 +1085,236 @@ class FodIdTest extends TestCase
         $this->assertSame($standard, FodId::toStandardBase64($clean . "\n"));
     }
 
+    // ----- White space and the two alphabets in the base64 text -----
+
+    /**
+     * A signed envelope whose standard base64 form holds both `+` and `/`,
+     * so each of the four mixes of the two alphabets can be made from it.
+     * Signatures are random, so a few attempts may be needed.
+     */
+    private function envelopeWithPlusAndSlash(): string
+    {
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            $standard = $this->signedOwidBase64(self::canonicalPayload());
+            if (str_contains($standard, '+') && str_contains($standard, '/')) {
+                return $standard;
+            }
+        }
+        $this->fail('No envelope with both + and / after 100 attempts.');
+    }
+
+    /**
+     * The standard text, and the URL-safe text with and without its
+     * padding.
+     *
+     * @return array<string>
+     */
+    private static function base64Forms(string $standard): array
+    {
+        $urlSafe = strtr($standard, '+/', '-_');
+        return [$standard, $urlSafe, rtrim($urlSafe, '=')];
+    }
+
+    /**
+     * The text with the white space put in at a number of points spread
+     * evenly through it.
+     */
+    private static function spaced(
+        string $text,
+        string $space,
+        int $count
+    ): string {
+        $length = strlen($text);
+        for ($point = $count; $point >= 1; $point--) {
+            $at = intdiv($length * $point, $count + 1);
+            $text = substr($text, 0, $at) . $space . substr($text, $at);
+        }
+        return $text;
+    }
+
+    /**
+     * The text with every byte outside printable ASCII written as its code,
+     * so a failure message shows where the white space is.
+     */
+    private static function show(string $text): string
+    {
+        return preg_replace_callback(
+            '/[^\x21-\x7E]/',
+            fn (array $byte) => sprintf('\x%02X', ord($byte[0])),
+            $text
+        );
+    }
+
+    /** Checks that both surfaces refuse the text as invalid base64. */
+    private function assertBothSurfacesRefuse(string $text): void
+    {
+        $result = FodId::tryFromBase64($text);
+        $this->assertSame(
+            ParseStatus::InvalidBase64,
+            $result->status,
+            self::show($text)
+        );
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->fodId);
+        try {
+            FodId::fromBase64($text);
+            $this->fail('fromBase64 read ' . self::show($text));
+        } catch (OwidException $exception) {
+            $this->assertStringContainsString(
+                ParseStatus::InvalidBase64->value,
+                $exception->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Checks that both surfaces refuse the text as invalid base64, and that
+     * the step they share refuses it before decoding by giving null.
+     */
+    private function assertInvalidBase64(string $text): void
+    {
+        $this->assertBothSurfacesRefuse($text);
+        $this->assertNull(FodId::toStandardBase64($text), self::show($text));
+    }
+
+    public function testWhiteSpaceAroundTheTextIsIgnored(): void
+    {
+        $standard = $this->envelopeWithPlusAndSlash();
+        foreach ([
+            [' ', "\n"],
+            ["\t", "\r\n"],
+            ["\u{00A0}", "\u{00A0}"],
+            ["\u{3000}", "\u{3000}"],
+        ] as [$before, $after]) {
+            foreach (self::base64Forms($standard) as $text) {
+                $surrounded = $before . $text . $after;
+                $this->assertSame(
+                    $standard,
+                    FodId::fromBase64($surrounded)->asBase64(),
+                    self::show($surrounded)
+                );
+                $this->assertSame(
+                    $standard,
+                    $this->assertParsed(FodId::tryFromBase64($surrounded))
+                        ->asBase64()
+                );
+            }
+        }
+    }
+
+    public function testEveryWhiteSpaceCharacterAndNoOtherIsTrimmed(): void
+    {
+        // The 25 characters with the Unicode White_Space property.
+        $whiteSpace = [
+            "\u{0009}", "\u{000A}", "\u{000B}", "\u{000C}", "\u{000D}",
+            "\u{0020}", "\u{0085}", "\u{00A0}", "\u{1680}", "\u{2000}",
+            "\u{2001}", "\u{2002}", "\u{2003}", "\u{2004}", "\u{2005}",
+            "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}", "\u{200A}",
+            "\u{2028}", "\u{2029}", "\u{202F}", "\u{205F}", "\u{3000}",
+        ];
+        $this->assertCount(25, array_unique($whiteSpace));
+        $standard = $this->envelopeWithPlusAndSlash();
+        foreach ($whiteSpace as $space) {
+            $this->assertSame(
+                $standard,
+                $this->assertParsed(
+                    FodId::tryFromBase64($space . $standard . $space)
+                )->asBase64(),
+                self::show($space)
+            );
+            $this->assertNull(
+                FodId::toStandardBase64('YW' . $space . 'Jj'),
+                self::show($space)
+            );
+        }
+        // Characters that PHP's trim() or \s, or another language's
+        // built-in, takes as white space and Unicode does not. The decoder
+        // refuses them, as it does any character outside the alphabet.
+        $others = ["\0", "\u{001C}", "\u{180E}", "\u{FEFF}"];
+        foreach ($others as $other) {
+            $this->assertBothSurfacesRefuse($other . $standard);
+            $this->assertBothSurfacesRefuse($standard . $other);
+        }
+    }
+
+    public function testWhiteSpaceAloneIsMissingInput(): void
+    {
+        foreach ([" \t\r\n", "\u{00A0}", "\u{3000}", "\u{000C}"] as $value) {
+            $this->assertSame('', FodId::toStandardBase64($value));
+            $this->assertFailed(
+                FodId::tryFromBase64($value),
+                ParseStatus::MissingInput
+            );
+            try {
+                FodId::fromBase64($value);
+                $this->fail('fromBase64 read ' . self::show($value));
+            } catch (OwidException $exception) {
+                $this->assertStringContainsString(
+                    ParseStatus::MissingInput->value,
+                    $exception->getMessage()
+                );
+            }
+        }
+    }
+
+    public function testWhiteSpaceInsideTheTextIsRefused(): void
+    {
+        $standard = $this->envelopeWithPlusAndSlash();
+        foreach ([
+            [' ', 1],
+            [' ', 2],
+            [' ', 3],
+            ["\t", 4],
+            ["\r\n", 2],
+            ["\u{00A0}", 4],
+            ["\u{3000}", 1],
+        ] as [$space, $count]) {
+            foreach (self::base64Forms($standard) as $text) {
+                $this->assertInvalidBase64(self::spaced($text, $space, $count));
+            }
+        }
+    }
+
+    public function testATextWithBothAlphabetsIsRefused(): void
+    {
+        $standard = $this->envelopeWithPlusAndSlash();
+        $urlSafe = FodId::fromBase64($standard)->asBase64Url();
+        foreach ([
+            [$standard, '+', '-'],
+            [$standard, '/', '_'],
+            [$urlSafe, '-', '+'],
+            [$urlSafe, '_', '/'],
+        ] as [$text, $from, $to]) {
+            $mixed = substr_replace($text, $to, strpos($text, $from), 1);
+            $this->assertInvalidBase64($mixed);
+        }
+    }
+
+    public function testToStandardBase64RefusesWhiteSpaceInsideOrBothAlphabets(): void
+    {
+        $this->assertSame('YQ==', FodId::toStandardBase64(" YQ\n"));
+        $this->assertSame(
+            '+/==',
+            FodId::toStandardBase64("\u{3000}-_\u{3000}")
+        );
+        foreach ([
+            'YW Jj',
+            "YW\tJj",
+            "YW\r\nJj",
+            "YW\u{00A0}Jj",
+            '+_',
+            '-/',
+            '+-',
+            '/_',
+            "YWJj\xFF",
+        ] as $value) {
+            $this->assertNull(
+                FodId::toStandardBase64($value),
+                self::show($value)
+            );
+        }
+    }
+
     public function testAsBase64UrlRoundTrips(): void
     {
         $standard = $this->envelopeWithAlphabetCharacters();

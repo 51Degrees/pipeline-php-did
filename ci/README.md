@@ -119,8 +119,9 @@ Download that artifact and check inside it before anyone tags for real.
 - `third-party/swan-community/owid/src` holds the seven OWID PHP files,
   with `LICENSE` and `NOTICE.md` beside them, and `NOTICE.md` names the
   upstream repository and the commit the copy came from.
-- `src`, `tests`, `examples`, `readme.md`, `phpunit.xml` and the root
-  `LICENSE` are all there, and there is no `owid-php` directory.
+- `src`, `tests`, `examples`, `readme.md` and `phpunit.xml` are all
+  there, and there is no `owid-php` directory. The package has no
+  `LICENSE` of its own, because `composer.json` declares the licence.
 
 Only when both of those are right, tag a real release.
 

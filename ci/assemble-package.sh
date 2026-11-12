@@ -52,8 +52,10 @@ mkdir -p "$out"
 # a consumer can see the package exercised. The development-only files
 # are deliberately left out, being .gitmodules and .gitignore, which
 # describe a submodule the published tree does not have, and .github,
-# which builds this repository rather than the package.
-for path in LICENSE readme.md phpunit.xml src tests examples; do
+# which builds this repository rather than the package. The package has no
+# licence file of its own, as with every other package, because the licence
+# is declared in composer.json and repeated in the header of every file.
+for path in readme.md phpunit.xml src tests examples; do
     [ -e "$path" ] || fail "expected '$path' in the checkout"
     cp -R "$path" "$out/"
 done
@@ -85,8 +87,8 @@ maintained here, so any defect or change belongs upstream.
 The copy is licensed under the Apache License, Version 2.0, whose text is
 in the \`LICENSE\` file beside this notice and whose terms are repeated in
 the header of every copied file. The rest of the package is licensed
-under the European Union Public Licence v1.2, whose text is in the
-\`LICENSE\` file at the root of the package.
+under the European Union Public Licence v1.2, as \`composer.json\`
+declares and the header of each of its files states.
 NOTICE
 
 php ci/rewrite-composer-json.php \

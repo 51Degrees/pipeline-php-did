@@ -78,11 +78,9 @@ declare(strict_types=1);
  *
  * Environment variables.
  *
- *   _51DEGREES_RESOURCE_KEY  required, read before the legacy
- *                            RESOURCE_KEY
- *   _51DEGREES_LICENSE_KEY   optional, read before the legacy
- *                            LICENSE_KEY
- *   FOD_CLOUD_API_URL        optional, the cloud API base including
+ *   _51DEGREES_RESOURCE_KEY  required
+ *   _51DEGREES_LICENSE_KEY   optional
+ *   _51DEGREES_CLOUD_ENDPOINT        optional, the cloud API base including
  *                            the /api/v4/ segment, defaulting to
  *                            https://cloud.51degrees.com/api/v4/
  */
@@ -101,13 +99,33 @@ if (!is_file($autoload)) {
 }
 require $autoload;
 
-// The resource key is public by nature and names the account. The
-// aligned name is read first, then the legacy one.
-$resource = getenv('_51DEGREES_RESOURCE_KEY') ?: getenv('RESOURCE_KEY');
+/**
+ * The value of an environment variable, read by its name and, when that
+ * is not set or is empty, by the deprecated name it replaced, whose use is
+ * written to the PHP error log.
+ */
+function readVariable(string $name, string $deprecated): string
+{
+    $value = (string) getenv($name);
+    if ($value !== '') {
+        return $value;
+    }
+
+    $value = (string) getenv($deprecated);
+    if ($value !== '') {
+        error_log("A value was read from the environment variable {$deprecated}, "
+            . "which is deprecated. {$name} replaces it, so set that to the "
+            . 'same value.');
+    }
+
+    return $value;
+}
+
+// The resource key is public by nature and names the account.
+$resource = readVariable('_51DEGREES_RESOURCE_KEY', 'RESOURCE_KEY');
 if (!$resource) {
     http_response_code(500);
-    exit('Set _51DEGREES_RESOURCE_KEY (or the legacy RESOURCE_KEY) to '
-        . 'the resource key of the page.');
+    exit('Set _51DEGREES_RESOURCE_KEY to the resource key of the page.');
 }
 
 // Only an account that holds licence keys needs one to redeem, because
@@ -115,10 +133,10 @@ if (!$resource) {
 // servers. An account holding none has nothing to check against, so the
 // demo runs without it, and where the account does hold some the
 // redemption reports the context unreadable.
-$licence = getenv('_51DEGREES_LICENSE_KEY') ?: getenv('LICENSE_KEY') ?: null;
+$licence = readVariable('_51DEGREES_LICENSE_KEY', 'LICENSE_KEY') ?: null;
 
 // One client for the server. The endpoint argument is left null so the
-// client reads FOD_CLOUD_API_URL itself, the same variable the 51Degrees
+// client reads _51DEGREES_CLOUD_ENDPOINT itself, the same variable the 51Degrees
 // cloud request engine honours, and falls back to the public cloud. A
 // host other than cloud.51degrees.com would be used to (a) use an on
 // premise web server, or (b) use a privately hosted version of the
