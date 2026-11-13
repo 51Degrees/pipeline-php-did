@@ -16,29 +16,23 @@
     "license": "EUPL-1.2",
     "type": "library",
     "homepage": "https://51degrees.com/developers/51did?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=homepage",
-    "support":
-    {
+    "support": {
         "source": "https://github.com/51Degrees/51degrees-php",
         "docs": "https://51degrees.com/documentation/_identifiers_51_did.html?utm_source=packagist&utm_medium=package&utm_campaign=51degrees-php&utm_content=fiftyone.pipeline.did&utm_term=documentation"
     },
     "require": {
         "php": ">=8.1",
         "ext-json": "*",
-        "swan-community/owid": "*"
+        "ext-openssl": "*",
+        "ext-mbstring": "*"
     },
     "require-dev": {
         "phpunit/phpunit": "*"
     },
-    "repositories": [
-        {
-            "comment": "Take OWID from the owid-php git submodule, a checkout of SWAN-community/owid-php. Switch to Packagist once swan-community/owid is published there.",
-            "type": "path",
-            "url": "./owid-php"
-        }
-    ],
     "autoload": {
         "psr-4": {
-            "fiftyone\\pipeline\\did\\": "src/"
+            "fiftyone\\pipeline\\did\\": "src/",
+            "SwanCommunity\\Owid\\": "third-party/swan-community/owid/src/"
         }
     },
     "autoload-dev": {
